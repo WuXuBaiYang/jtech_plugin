@@ -1,0 +1,18 @@
+# Dependencies & build artifacts
+node_modules/
+.pnpm-store/
+
+# Logs
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Local state that must never be committed (contains tokens)
+*.local.json

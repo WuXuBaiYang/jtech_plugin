@@ -1,0 +1,37 @@
+{
+  "name": "ds-deepseek-usage",
+  "version": "1.0.0",
+  "description": "DeepSeek account usage monitor (HP/MP) — sidebar module with balance and token usage bars, browser-login auth capture, hourly visible-only sync, and real-time local token increments.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
