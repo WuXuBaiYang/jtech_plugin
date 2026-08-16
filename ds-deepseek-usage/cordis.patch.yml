@@ -1,0 +1,7 @@
+# ds-deepseek-usage — bundle patch layer.
+# Applied when the package is installed as a profile bundle (`dsh plugin add`):
+# inserts the plugin row into the composed tree. The row references the package
+# by `name`, so the loader resolves its host half via node_modules.
+- insert:
+    - id: ds-deepseek-usage
+      name: ds-deepseek-usage

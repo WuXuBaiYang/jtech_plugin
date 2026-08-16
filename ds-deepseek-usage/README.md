@@ -37,7 +37,23 @@ DeepSeek Platform API ──sync──▶ index.js (host) ──state──▶ c
 
 > 均为平台私有面板接口,可能随时变动;认证失败码 `40002`/`40003` 视为登录失效。
 
-## 安装(以 web profile 为例)
+## 安装
+
+### 方式一:从 npm 一键安装(推荐)
+
+插件已声明 `dsh.bundle.patch`(随包附带 `cordis.patch.yml`),`dsh plugin` 装完会自动把它加入 profile 的 bundles 层并激活,无需手改任何配置文件:
+
+```powershell
+# web profile
+dsh plugin --profile web add ds-deepseek-usage
+
+# 桌面端 profile
+dsh plugin --profile desktop add ds-deepseek-usage
+```
+
+> 需要本机 `pnpm` 在 PATH 上(`dsh plugin` 内部转发给 pnpm)。
+
+### 方式二:手动安装(本地开发/离线)
 
 1. 把本目录放入 DSH 用户目录的共享插件目录:
 
@@ -55,7 +71,9 @@ DeepSeek Platform API ──sync──▶ index.js (host) ──state──▶ c
          name: ds-deepseek-usage
    ```
 
-3. **重启** `dsh web` / 桌面端(客户端 bundle 在启动时烘焙,刷新页面不生效)
+### 两种方式之后
+
+**重启** `dsh web` / 桌面端(客户端 bundle 在启动时烘焙,刷新页面不生效)。
 
 > 桌面端(dsh-desktop)会自动把 `profiles/node_modules` 里的用户包 junction 进应用内,无需额外操作。
 

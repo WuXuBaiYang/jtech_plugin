@@ -8,13 +8,20 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
-    "client.js"
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": []
@@ -25,6 +32,32 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "usage",
+    "token",
+    "balance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WuXuBaiYang/jtech_plugin.git",
+    "directory": "ds-deepseek-usage"
+  },
+  "homepage": "https://github.com/WuXuBaiYang/jtech_plugin/tree/master/ds-deepseek-usage",
+  "bugs": {
+    "url": "https://github.com/WuXuBaiYang/jtech_plugin/issues"
+  },
+  "author": {
+    "name": "WuXuBaiYang",
+    "email": "3906549+WuXuBaiYang@users.noreply.github.com"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "react": "^18.2.0"
