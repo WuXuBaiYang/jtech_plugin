@@ -8,15 +8,16 @@
 
 | 子项目 | 说明 | 状态 |
 | --- | --- | --- |
-| [ds-deepseek-usage](./ds-deepseek-usage/) | DeepSeek 账号用量监视 —— 仿游戏风格 HP/MP 侧边栏(余额 + Token 用量,浏览器登录态采集,实时计数) | ✅ 已发布 [npm](https://www.npmjs.com/package/ds-deepseek-usage) |
+| [ds-deepseek-usage](./ds-deepseek-usage/) | DeepSeek 账号用量监视 —— 仿游戏风格 HP/MP 侧边栏(余额 + Token 用量,微信扫码登录,实时计数) | ✅ 已发布 [npm](https://www.npmjs.com/package/ds-deepseek-usage) |
 
 ## 仓库结构
 
 ```
 jtech_plugin/
 ├── ds-deepseek-usage/        # 子项目:DeepSeek 用量监视插件
-│   ├── index.js              # Host 半区(服务端)
-│   ├── client.js             # Client 半区(浏览器 UI)
+│   ├── index.js              # Host 半区(服务端:同步 + 微信扫码登录)
+│   ├── client.js             # Client 半区(浏览器 UI:二维码渲染)
+│   ├── ds-pow.js             # DeepSeekHashV1 PoW 求解器
 │   ├── cordis.patch.yml      # bundle patch 层(一键安装时自动应用)
 │   ├── dsh.plugin.json       # 展示性插件元数据(可选)
 │   ├── package.json          # 含 dsh.bundle / dsh.client 声明

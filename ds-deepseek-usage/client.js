@@ -83,6 +83,10 @@ window.__ModuleLoader__.load({
 .ds-mini-login{display:flex;align-items:center;gap:5px;font-size:11px;color:#ffb454;font-weight:700}
 .ds-mini-busy{display:flex;align-items:center;gap:6px;font-size:11px;color:#9fc4f5;font-weight:700}
 .ds-mini-err{display:flex;align-items:center;gap:5px;font-size:11px;color:#ff8d7a;font-weight:700}
+.ds-qr{display:flex;flex-direction:column;align-items:center;gap:6px;width:100%}
+.ds-qr img{border-radius:8px;border:1px solid rgba(90,130,190,.35);background:#fff;padding:6px}
+.ds-qr-status{font-size:10px;color:#9fc4f5;text-align:center;line-height:1.4}
+.ds-qr-err{color:#ff8d7a}
 .ds-spin{width:10px;height:10px;border-radius:50%;border:2px solid #1e3054;border-top-color:#3f9dff;animation:ds-spin 1s linear infinite;flex:none}
 .ds-bar{position:relative;height:16px;border-radius:4px;background:#070c18;border:1px solid #1c2c50;overflow:hidden;width:100%}
 .ds-bar-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .6s cubic-bezier(.2,.8,.3,1)}
@@ -116,27 +120,42 @@ window.__ModuleLoader__.load({
         return function () { style.remove() }
       }, 'ds-usage: styles')
 
-      function LoginButton({ state, setState }) {
-        const l = state.login
-        let content = null
-        let onClick = null
-        let title = 'DeepSeek 用量（未登录，点击登录）'
-        if (l && l.active) {
-          title = '正在登录 DeepSeek…（点击取消）'
-          content = el('span', { className: 'ds-mini-busy' },
-            el('span', { className: 'ds-spin' }),
-            el('span', null, '登录中…'),
-          )
-          onClick = function () { rpc('loginCancel').then(setState).catch(function () {}) }
-        } else if (l && l.phase === 'error') {
-          title = '登录失败：' + (l.error || '未知错误') + '（点击重试）'
-          content = el('span', { className: 'ds-mini-err' }, el('span', null, '⚠ 重试'))
-          onClick = function () { rpc('loginStart').then(setState).catch(function () {}) }
-        } else {
-          content = el('span', { className: 'ds-mini-login' }, el('span', null, '⚡ 登录'))
-          onClick = function () { rpc('loginStart').then(setState).catch(function () {}) }
+      // 微信扫码登录:host 半区通过平台 auth API 驱动 uuid -> 轮询 -> code -> token,
+      // 本组件只负责渲染二维码与状态(状态来自 host 的 state.login 字段)。
+      function QrLogin({ state, setState }) {
+        const l = state.login || { phase: null }
+        const [busy, setBusy] = React.useState(false)
+        const start = function () {
+          setBusy(true)
+          rpc('loginStart').then(function () {
+            rpc('state').then(setState).catch(function () {})
+          }).catch(function () {}).finally(function () { setBusy(false) })
         }
-        return el('button', { className: 'ds-mini', title: title, 'aria-label': 'DeepSeek 用量', onClick: onClick }, content)
+        const cancel = function () {
+          rpc('loginCancel').then(function () { rpc('state').then(setState).catch(function () {}) }).catch(function () {})
+        }
+        const retry = start
+        let body = null
+        if (l.phase === 'waiting' || l.phase === 'scanned' || l.phase === 'done') {
+          body = el('div', { className: 'ds-qr' },
+            el('img', { src: l.qrImageUrl, alt: '微信扫码登录', width: 120, height: 120 }),
+            el('div', { className: 'ds-qr-status' }, l.phase === 'scanned' ? '已扫码，请在手机上确认 ✓' : '请使用微信扫码登录'),
+            el('button', { className: 'ds-mini', onClick: cancel, title: '取消登录' }, el('span', null, '取消')),
+          )
+        } else if (l.phase === 'expired' || l.phase === 'error') {
+          body = el('div', { className: 'ds-qr' },
+            el('div', { className: 'ds-qr-status ds-qr-err' }, '⚠ ' + (l.error || '二维码已过期')),
+            el('button', { className: 'ds-mini', onClick: retry, title: '重新获取二维码' }, el('span', null, '刷新二维码')),
+          )
+        } else {
+          body = el('button', {
+            className: 'ds-mini',
+            title: 'DeepSeek 用量（未登录，微信扫码登录）',
+            'aria-label': 'DeepSeek 用量',
+            onClick: busy ? null : start,
+          }, el('span', { className: 'ds-mini-login' }, busy ? '获取二维码…' : '⚡ 扫码登录'))
+        }
+        return el('div', { className: 'ds-body' }, body)
       }
 
       function UsageBars({ state, modeIdx, setModeIdx }) {
@@ -224,7 +243,7 @@ window.__ModuleLoader__.load({
         const body = state === null
           ? el('button', { className: 'ds-mini', 'aria-label': 'DeepSeek 用量' }, el('span', { className: 'ds-mini-busy' }, '…'))
           : !state.loggedIn
-            ? React.createElement(LoginButton, { state: state, setState: setState })
+            ? React.createElement(QrLogin, { state: state, setState: setState })
             : React.createElement(UsageBars, { state: state, modeIdx: modeIdx, setModeIdx: setModeIdx })
 
         return el('div', { className: 'ds-module' },

@@ -9,7 +9,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 ## 功能
 
 - **余额 + 用量同步引擎**:每小时(仅页面可见时)拉取平台账号余额、今日/本月 Token 用量与费用
-- **浏览器登录态采集**:通过 CDP 打开 Edge/Chrome(专用 profile)登录 DeepSeek Platform,自动抓取 `userToken` 并校验,无需手动填 Token
+- **微信扫码登录**:插件内直接显示微信二维码,扫码确认后经平台 auth API 换取 `userToken`(无需浏览器/CDP,纯接口驱动)
 - **实时本地计数**:监听 `llm/stream` 事件,实时累加本次进程内产生的 Token 用量(今日/本月/分模型),平台尚未同步前即可看到增量
 - **文件持久化**:状态(含登录态)保存在 `$DSH_HOME/ds-deepseek-usage.json`,重启不丢
 
@@ -17,7 +17,8 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.js` | Host 半区(服务端):同步引擎、登录流程、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
+| `index.js` | Host 半区(服务端):同步引擎、微信扫码登录、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
+| `ds-pow.js` | DeepSeekHashV1 PoW 求解器(短信/密码等受保护接口的挑战证明,扫码登录不使用) |
 | `client.js` | Client 半区(浏览器):通过 `window.__ModuleLoader__` 加载,注入 `sidebar.footer.action` 槽位渲染 HP/MP 模块 |
 | `package.json` | 插件元数据(`exports["./client"]` 声明客户端半区) |
 | `dsh.plugin.json` | 展示性插件元数据(可选,随包分发,DSH 无硬性读取) |
@@ -27,7 +28,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 ```
 DeepSeek Platform API ──sync──▶ index.js (host) ──state──▶ client.js (浏览器 HP/MP 模块)
    ▲                                  ▲
-   └── CDP 浏览器登录采集 ◀──┘          └── llm/stream 实时计数(本地增量)
+   └── 微信扫码登录(auth API) ◀──┘      └── llm/stream 实时计数(本地增量)
 ```
 
 ### 数据源接口
@@ -80,7 +81,7 @@ dsh plugin --profile desktop add ds-deepseek-usage
 
 ## 使用
 
-- 未登录:点击模块 **⚡ 登录**,会弹出 Edge/Chrome 登录 DeepSeek Platform,完成后自动关闭浏览器
+- 未登录:点击模块 **⚡ 扫码登录**,插件内显示微信二维码,用微信扫码并在手机上确认,完成后自动登录
 - 已登录:
   - **HP 余额条**:悬停查看充值总额/剩余明细
   - **MP 用量条**:点击在 **今日 ↔ 本月** 间切换;悬停查看每格单位(今日/本月共用同一刻度)
@@ -115,7 +116,7 @@ node --check client.js
 | 侧边栏看不到模块 / API 返回 404 | profile 的 `cordis.patch.yml` 未挂载,或未重启 |
 | 点击 MP 条只换名称、进度不变 | 已修复:今日/本月共用同一刻度(取两者较大者为单位),切换时进度可见变化 |
 | 启用插件后对话报错/无法对话 | 已修复:计数逻辑位于 try/catch 中,观察者错误不会破坏主对话流 |
-| 登录失败提示找不到浏览器 | 需要本机安装 Edge 或 Chrome,且宿主提供 `subprocess` 服务 |
+| 登录失败/二维码过期 | 点击 **刷新二维码** 重新获取;若提示微信回调失败,稍后重试 |
 
 ## 许可
 

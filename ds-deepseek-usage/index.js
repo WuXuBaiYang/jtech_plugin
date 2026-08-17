@@ -1,34 +1,169 @@
-// ds-deepseek-usage — static Host half.
+// ds-deepseek-usage — static Host half (v2: API-based QR login).
 // DeepSeek account usage monitor: balance + token usage sync engine,
-// browser-login (CDP) auth capture, real-time local agent token counting,
-// and file-based persistence (plain node:fs — no storage-domain dependency).
+// WeChat scan-to-login via platform auth APIs (no browser/CDP), and
+// file-based persistence.
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { solveDeepSeekPow } from './ds-pow.js'
 
 export const name = 'ds-usage-host'
 export const inject = ['webServer', 'timer']
 
 const BASE = 'https://platform.deepseek.com'
+const AUTH_BASE = BASE + '/auth-api/v0/users'
 const SYNC_INTERVAL_MS = 3600000
 const AUTH_CODES = [40002, 40003]
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+const WX_APPID = 'wx335255e1b73f9e52'
+const WX_CALLBACK = BASE + '/auth-api/v0/users/oauth/wechat/callback'
+const WX_QR_BASE = 'https://open.weixin.qq.com/connect/qrconnect'
+const WX_POLL_BASE = 'https://long.open.weixin.qq.com/connect/l/qrconnect'
 
-// localStorage userToken (JSON {value} or bare string), then cookie fallback.
-const TOKEN_PROBE = "(function(){try{var v=localStorage.getItem('userToken');if(v)return v;var m=document.cookie.match(/(?:^|;\\s*)userToken=([^;]+)/);return m?decodeURIComponent(m[1]):''}catch(e){return ''}})()"
+// ---- HTTP helpers (global fetch; Node >= 22) ----
+async function dsFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      'User-Agent': BROWSER_UA,
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'Origin': BASE,
+      'Referer': BASE + '/sign_in',
+      ...(options.headers || {}),
+    },
+    redirect: options.redirect === undefined ? 'follow' : options.redirect,
+    signal: options.signal || AbortSignal.timeout(20000),
+  })
+}
 
-const HELPER = [
-  "const cmd=process.argv[1],a=process.argv[2],b=process.argv[3];",
-  "const out=o=>{console.log(JSON.stringify(o));process.exit(0)};",
-  "const fail=e=>{console.log(JSON.stringify({error:String(e&&e.message||e)}));process.exit(1)};",
-  "(async()=>{try{",
-  "if(cmd==='fetch'){const h=b?JSON.parse(b):{};const r=await fetch(a,{headers:h,signal:AbortSignal.timeout(20000)});const t=await r.text();out({status:r.status,body:t.slice(0,400000)});}",
-  "else if(cmd==='cdp'){const r=await fetch('http://127.0.0.1:'+a+b,{signal:AbortSignal.timeout(5000)});out({status:r.status,body:await r.text()});}",
-  "else if(cmd==='eval'){const ws=new WebSocket(a);const p=new Promise((res,rej)=>{const t=setTimeout(()=>rej(new Error('cdp-eval-timeout')),8000);ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:b,returnByValue:true}}));ws.onerror=()=>rej(new Error('ws-error'));ws.onmessage=ev=>{const m=JSON.parse(ev.data);if(m.id===1){clearTimeout(t);res(m)}};});const m=await p;try{ws.close()}catch(e){}out({result:m.result});}",
-  "else if(cmd==='cookies'){const ws=new WebSocket(a);const p=new Promise((res,rej)=>{const t=setTimeout(()=>rej(new Error('cdp-cookies-timeout')),8000);ws.onopen=()=>ws.send(JSON.stringify({id:1,method:'Network.getCookies',params:{}}));ws.onerror=()=>rej(new Error('ws-error'));ws.onmessage=ev=>{const m=JSON.parse(ev.data);if(m.id===1){clearTimeout(t);res(m)}};});const m=await p;try{ws.close()}catch(e){}out({result:m.result});}",
-  "else if(cmd==='discover'){const fs=require('node:fs'),os=require('node:os');const pf=process.env['PROGRAMFILES(X86)']||'C:/Program Files (x86)',pf64=process.env['PROGRAMW6432']||process.env['PROGRAMFILES']||'C:/Program Files',la=process.env['LOCALAPPDATA'];const cs=[];if(pf)cs.push(pf+'/Microsoft/Edge/Application/msedge.exe');if(pf64)cs.push(pf64+'/Microsoft/Edge/Application/msedge.exe');if(la)cs.push(la+'/Microsoft/Edge/Application/msedge.exe');if(pf)cs.push(pf+'/Google/Chrome/Application/chrome.exe');if(pf64)cs.push(pf64+'/Google/Chrome/Application/chrome.exe');if(la)cs.push(la+'/Google/Chrome/Application/chrome.exe');let edge=null,chrome=null;for(const p of cs){if(!fs.existsSync(p))continue;if(!edge&&p.indexOf('Edge')>=0)edge=p;if(!chrome&&p.indexOf('Chrome')>=0)chrome=p;}out({edge:edge,chrome:chrome,home:os.homedir()});}",
-  "else fail(new Error('unknown-command'));",
-  "}catch(e){fail(e)}})();"
-].join('')
+async function postJson(url, body, headers = {}) {
+  const res = await dsFetch(url, { method: 'POST', body: JSON.stringify(body), headers })
+  const text = await res.text()
+  let json = null
+  try { json = JSON.parse(text) } catch (e) { json = null }
+  return { status: res.status, json, text }
+}
+
+// ---- Proof-of-work gate for protected auth endpoints ----
+async function solveForTarget(targetPath) {
+  const { json } = await postJson(AUTH_BASE + '/create_guest_challenge', { target_path: targetPath })
+  const gc = json && json.data && json.data.biz_data && json.data.biz_data.guest_challenge
+  if (!gc) throw new Error('获取挑战失败: ' + JSON.stringify(json).slice(0, 160))
+  const answer = solveDeepSeekPow(gc.challenge, gc.salt, gc.expire_at, gc.difficulty)
+  if (answer === null) throw new Error('PoW 挑战无解')
+  return Buffer.from(JSON.stringify({ salt: gc.salt, answer })).toString('base64')
+}
+
+/** POST to a PoW-protected auth endpoint (login/send-code etc.). */
+async function authPost(path, body) {
+  const proof = await solveForTarget(path)
+  return postJson(AUTH_BASE + path, body, { 'X-DS-Guest-PoW-Response': proof })
+}
+
+// ---- DeepSeek Platform account API (token-authenticated) ----
+async function platformGet(token, path) {
+  const res = await dsFetch(BASE + path, {
+    headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+  })
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error('登录已失效'), { auth: true })
+  let data = null
+  try { data = await res.json() } catch (e) { throw new Error('接口返回无法解析') }
+  const code = data && data.code
+  if (code !== undefined && code !== 0) {
+    if (AUTH_CODES.indexOf(code) >= 0) throw Object.assign(new Error('登录已失效(code ' + code + ')'), { auth: true })
+    throw new Error('接口错误 code ' + code)
+  }
+  const biz = data && data.data
+  if (biz && biz.biz_code !== undefined && biz.biz_code !== 0) {
+    if (AUTH_CODES.indexOf(biz.biz_code) >= 0) throw Object.assign(new Error('登录已失效(biz ' + biz.biz_code + ')'), { auth: true })
+    throw new Error('接口业务错误 ' + biz.biz_code)
+  }
+  return data
+}
+
+async function validateToken(t) {
+  try {
+    const d = await platformGet(t, '/api/v0/users/get_user_summary')
+    return Boolean(d && d.data)
+  } catch (e) { return false }
+}
+
+// ---- WeChat QR login ----
+function wxQrUrl() {
+  return WX_QR_BASE + '?appid=' + WX_APPID +
+    '&scope=snsapi_login&redirect_uri=' + encodeURIComponent(WX_CALLBACK) +
+    '&state=&login_type=jssdk&self_redirect=false&stylelite=1&fast_login=0'
+}
+
+/** Step 1: fetch a fresh WeChat QR uuid (f=xml) and build the session. */
+async function qrCreate() {
+  const res = await dsFetch(wxQrUrl() + '&f=xml&' + Date.now(), {
+    headers: { Accept: 'text/xml, application/xml, */*' },
+  })
+  const xml = await res.text()
+  const m = xml.match(/<uuid><!\[CDATA\[([^\]]+)\]\]><\/uuid>/) || xml.match(/<uuid>([^<]+)<\/uuid>/)
+  if (!m) throw new Error('微信二维码创建失败: ' + xml.slice(0, 120))
+  const uuid = m[1]
+  return {
+    uuid,
+    phase: 'waiting',               // waiting -> scanned -> confirmed -> done | expired | error
+    startedAt: Date.now(),
+    qrImageUrl: 'https://open.weixin.qq.com/connect/qrcode/' + uuid,
+    error: null,
+  }
+}
+
+/** Step 2: poll WeChat login status; on confirm, exchange code -> token. */
+async function qrPoll(session, setToken, syncNow) {
+  const res = await dsFetch(WX_POLL_BASE + '?uuid=' + encodeURIComponent(session.uuid) + '&_=' + Date.now(), {
+    headers: { Accept: 'text/javascript, */*' },
+  })
+  const body = await res.text()
+  const err = (body.match(/wx_errcode\s*=\s*(\d+)/) || [])[1]
+  const code = (body.match(/wx_code\s*=\s*'([^']*)'/) || [])[1] || ''
+  if (code) {
+    // WeChat confirmed the scan — exchange the code for a platform token.
+    const token = await exchangeWechatCode(code)
+    setToken(token)
+    session.phase = 'done'
+    session.error = null
+    syncNow()
+    return session
+  }
+  if (err === '402') { session.phase = 'expired'; session.error = '二维码已过期，请刷新重试'; return session }
+  if (err === '405') { session.phase = 'scanned'; return session }
+  // 408 or anything else: still waiting
+  session.phase = 'waiting'
+  return session
+}
+
+/** Exchange the WeChat auth code for a DeepSeek userToken. */
+async function exchangeWechatCode(code) {
+  // 1. platform callback swaps code -> nonce (307 redirect to /sign_in?nonce=...&provider=WECHAT)
+  const cb = await dsFetch(WX_CALLBACK + '?code=' + encodeURIComponent(code) + '&state=', {
+    redirect: 'manual',
+    headers: { Accept: 'text/html,application/xhtml+xml' },
+  })
+  let nonce = null
+  const loc = cb.headers.get('location')
+  const locMatch = loc && loc.match(/\bnonce=([^&]+)/)
+  if (locMatch) nonce = locMatch[1]
+  if (!nonce) {
+    // Fallback: follow the redirect and read the final URL.
+    const fin = await dsFetch(WX_CALLBACK + '?code=' + encodeURIComponent(code) + '&state=', {
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+    })
+    const finMatch = fin.url.match(/\bnonce=([^&]+)/)
+    if (finMatch) nonce = finMatch[1]
+  }
+  if (!nonce) throw new Error('微信回调未返回 nonce')
+  // 2. exchange nonce -> userToken (no PoW gate)
+  const { json } = await postJson(AUTH_BASE + '/oauth/get_token', { nonce, provider: 'WECHAT' })
+  const token = json && json.data && json.data.biz_data && json.data.biz_data.token
+  if (!token) throw new Error('获取 token 失败: ' + JSON.stringify(json).slice(0, 160))
+  return token
+}
 
 function stateFilePath() {
   const home = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
@@ -36,8 +171,6 @@ function stateFilePath() {
 }
 
 export async function apply(ctx) {
-  const subprocess = ctx.get('subprocess')
-
   let token = null
   let baseline = null
   let local = freshLocal()
@@ -45,10 +178,8 @@ export async function apply(ctx) {
   let syncing = false
   let syncError = null
   let clientVisible = false
-  let login = null
-  let edgeHandle = null
-  let loginDisposer = null
-  let nodePath = null
+  let qr = null
+  let qrDisposer = null
   let persistenceKind = 'memory'
   let persistenceError = null
 
@@ -153,80 +284,6 @@ export async function apply(ctx) {
     })()
   }, { global: true, prepend: true })
 
-  async function resolveNode() {
-    if (subprocess === undefined) return null
-    try { return await subprocess.resolveExecutable('node') } catch (e) { /* next */ }
-    try {
-      const cmdPath = await subprocess.resolveExecutable('cmd')
-      const h = subprocess.spawn({
-        argv: [cmdPath, '/c', 'where', 'node'],
-        stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
-        graceMs: 5000,
-      })
-      await h.done
-      const text = h.collected.stdout ? h.collected.stdout.finalize().text : ''
-      const line = String(text).split('\n').map(function (s) { return s.trim() }).filter(function (s) { return s.length > 0 })[0]
-      if (line) return line
-    } catch (e) { /* next */ }
-    return null
-  }
-
-  async function nodeRun(args) {
-    if (subprocess === undefined) throw new Error('subprocess 服务不可用')
-    if (nodePath === null) nodePath = await resolveNode()
-    if (!nodePath) throw new Error('找不到 node 运行时')
-    const handle = subprocess.spawn({
-      argv: [nodePath, '-e', HELPER].concat(args),
-      stdio: { stdin: 'ignore', stdout: { maxBytes: 1048576 }, stderr: { maxBytes: 65536 } },
-      graceMs: 5000,
-    })
-    const done = await handle.done
-    const stdoutText = handle.collected.stdout ? handle.collected.stdout.finalize().text : ''
-    const stderrText = handle.collected.stderr ? handle.collected.stderr.finalize().text : ''
-    let json = null
-    try { json = JSON.parse(String(stdoutText).trim()) } catch (e) { json = null }
-    if (done.exitCode === 0 && json !== null) return json
-    throw new Error((json && json.error) ? json.error : (stderrText || ('node 退出码 ' + done.exitCode)))
-  }
-
-  async function platformGet(path) {
-    const r = await nodeRun(['fetch', BASE + path, JSON.stringify({ Authorization: 'Bearer ' + token, Accept: 'application/json' })])
-    if (r.status === 401 || r.status === 403) { invalidateToken(); throw new Error('登录已失效') }
-    let data = null
-    try { data = JSON.parse(r.body) } catch (e) { throw new Error('接口返回无法解析') }
-    const code = data && data.code
-    if (code !== undefined && code !== 0) {
-      if (AUTH_CODES.indexOf(code) >= 0) { invalidateToken(); throw new Error('登录已失效(code ' + code + ')') }
-      throw new Error('接口错误 code ' + code)
-    }
-    const biz = data && data.data
-    if (biz && biz.biz_code !== undefined && biz.biz_code !== 0) {
-      if (AUTH_CODES.indexOf(biz.biz_code) >= 0) { invalidateToken(); throw new Error('登录已失效(biz ' + biz.biz_code + ')') }
-      throw new Error('接口业务错误 ' + biz.biz_code)
-    }
-    return data
-  }
-
-  async function validateToken(t) {
-    try {
-      const r = await nodeRun(['fetch', BASE + '/api/v0/users/get_user_summary', JSON.stringify({ Authorization: 'Bearer ' + t, Accept: 'application/json' })])
-      if (r.status !== 200) return false
-      let d = null
-      try { d = JSON.parse(r.body) } catch (e) { return false }
-      const code = d && d.code
-      if (code !== undefined && code !== 0) return false
-      const biz = d && d.data
-      if (biz && biz.biz_code !== undefined && biz.biz_code !== 0) return false
-      return true
-    } catch (e) { return false }
-  }
-
-  function invalidateToken() {
-    token = null
-    baseline = null
-    persistSoon()
-  }
-
   async function syncAccount() {
     if (!token || syncing) return false
     syncing = true
@@ -236,9 +293,9 @@ export async function apply(ctx) {
       const month = now.getUTCMonth() + 1
       const year = now.getUTCFullYear()
       const pair = await Promise.all([
-        platformGet('/api/v0/users/get_user_summary'),
-        platformGet('/api/v0/usage/amount?month=' + month + '&year=' + year),
-        platformGet('/api/v0/usage/cost?month=' + month + '&year=' + year),
+        platformGet(token, '/api/v0/users/get_user_summary'),
+        platformGet(token, '/api/v0/users/usage/amount?month=' + month + '&year=' + year),
+        platformGet(token, '/api/v0/users/usage/cost?month=' + month + '&year=' + year),
       ])
       baseline = parseSnapshot(pair[0], pair[1], pair[2])
       persistSoon()
@@ -372,106 +429,38 @@ export async function apply(ctx) {
     }
   }
 
-  async function pickPort() {
-    for (let i = 0; i < 6; i++) {
-      const p = 9300 + Math.floor(Math.random() * 400)
-      try { await nodeRun(['cdp', String(p), '/json/version']) } catch (e) { return p }
-    }
-    return 9300 + Math.floor(Math.random() * 400)
-  }
-
-  async function startLogin() {
-    if (login && login.active) return
-    if (subprocess === undefined) {
-      login = { active: false, phase: 'error', error: '子进程服务不可用，无法打开浏览器' }
-      return
-    }
-    login = { active: true, phase: 'starting', error: null }
+  // ---- QR login lifecycle ----
+  async function qrStart() {
+    stopQrPoll()
     try {
-      const disc = await nodeRun(['discover'])
-      const browser = (disc && (disc.edge || disc.chrome)) || null
-      if (!browser) { login = { active: false, phase: 'error', error: '未找到 Edge/Chrome 浏览器' }; return }
-      const port = await pickPort()
-      const home = (disc && disc.home) || ''
-      const profileDir = home + '/.dsh/ds-usage-edge-profile'
-      edgeHandle = subprocess.spawn({
-        argv: [browser, '--remote-debugging-port=' + port, '--remote-allow-origins=*', '--user-data-dir=' + profileDir, '--no-first-run', '--no-default-browser-check', '--disable-session-crashed-bubble', '--disable-features=msEdgeFirstRunExperience', '--window-position=140,80', '--window-size=1024,700', BASE + '/sign_in'],
-        stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 65536 } },
-        graceMs: 3000,
-      })
-      login = { active: true, phase: 'waiting', error: null, startedAt: Date.now(), port: port }
-      edgeHandle.done.then(function () {
-        if (login && login.active) login = { active: false, phase: 'error', error: '浏览器已关闭，登录未完成' }
-        edgeHandle = null
-        stopLoginPoll()
-      }).catch(function () {
-        if (login && login.active) login = { active: false, phase: 'error', error: '浏览器启动失败' }
-      })
-      startLoginPoll()
+      qr = await qrCreate()
+      qrDisposer = ctx.interval(function () {
+        qrPollTick().catch(function (e) {
+          console.error('ds-usage: 扫码轮询失败:', e)
+          if (qr) { qr.error = String(e && e.message || e); qr.phase = 'error' }
+        })
+      }, 2000)
+      return qrState()
     } catch (e) {
-      login = { active: false, phase: 'error', error: String(e && e.message || e) }
-      console.error('ds-usage: 登录启动失败:', e)
+      qr = { phase: 'error', error: String(e && e.message || e), startedAt: Date.now(), qrImageUrl: null }
+      return qrState()
     }
   }
 
-  function startLoginPoll() {
-    if (loginDisposer) return
-    loginDisposer = ctx.interval(async function () {
-      if (!login || !login.active) return
-      if (Date.now() - login.startedAt > 600000) { finishLogin('登录超时，请重试'); return }
-      try {
-        const lr = await nodeRun(['cdp', String(login.port), '/json/list'])
-        let list = []
-        try { list = JSON.parse(lr.body) } catch (e) { list = [] }
-        const page = (list || []).find(function (t) {
-          return t && t.type === 'page' && String(t.url || '').indexOf('platform.deepseek.com') >= 0
-        })
-        if (!page || !page.webSocketDebuggerUrl) return
-        const ev = await nodeRun(['eval', page.webSocketDebuggerUrl, TOKEN_PROBE])
-        let raw = ev && ev.result && ev.result.result && ev.result.result.value
-        if (!raw) {
-          try {
-            const ck = await nodeRun(['cookies', page.webSocketDebuggerUrl])
-            const cookies = ck && ck.result && ck.result.result && ck.result.result.cookies
-            if (Array.isArray(cookies)) {
-              const hit = cookies.find(function (c) { return c && /user.?token/i.test(String(c.name)) })
-                || cookies.find(function (c) { return c && /token/i.test(String(c.name)) })
-              if (hit && hit.value) raw = hit.value
-            }
-          } catch (e) { /* ignore */ }
-        }
-        let tok = raw
-        try {
-          const parsed = JSON.parse(raw)
-          if (parsed && parsed.value) tok = parsed.value
-        } catch (e) { /* keep raw */ }
-        if (typeof tok !== 'string' || tok.length === 0) return
-        login = { active: true, phase: 'validating', error: null, startedAt: login.startedAt }
-        const ok = await validateToken(tok)
-        if (ok) {
-          token = tok
-          login = { active: false, phase: 'done', error: null }
-          stopLoginPoll()
-          if (edgeHandle) { try { edgeHandle.terminate() } catch (e) { /* ignore */ } edgeHandle = null }
-          persistNow()
-          syncAccount()
-        } else {
-          finishLogin('登录校验失败，请重试')
-        }
-      } catch (e) { /* transient, keep polling */ }
-    }, 2000)
+  async function qrPollTick() {
+    if (!qr || qr.phase === 'done' || qr.phase === 'expired' || qr.phase === 'error') return
+    if (Date.now() - qr.startedAt > 600000) { qr.phase = 'expired'; qr.error = '登录超时，请重试'; stopQrPoll(); return }
+    await qrPoll(qr, function (t) { token = t; persistNow() }, function () { syncAccount() })
+    if (qr.phase === 'done') stopQrPoll()
   }
 
-  function stopLoginPoll() {
-    if (loginDisposer) { loginDisposer(); loginDisposer = null }
+  function stopQrPoll() {
+    if (qrDisposer) { qrDisposer(); qrDisposer = null }
   }
-  function finishLogin(msg) {
-    login = { active: false, phase: 'error', error: msg }
-    stopLoginPoll()
-    if (edgeHandle) { try { edgeHandle.terminate() } catch (e) { /* ignore */ } edgeHandle = null }
-  }
-  function cancelLogin() {
-    if (login && login.active) finishLogin('已取消登录')
+
+  function qrState() {
+    if (!qr) return null
+    return { phase: qr.phase, qrImageUrl: qr.qrImageUrl, error: qr.error }
   }
 
   function buildState() {
@@ -499,7 +488,7 @@ export async function apply(ctx) {
       syncError: syncError,
       lastSyncAt: b ? b.syncedAt : null,
       nextSyncIn: b ? Math.max(0, SYNC_INTERVAL_MS - staleMs) : 0,
-      login: login ? { active: login.active, phase: login.phase, error: login.error } : null,
+      login: qrState(),
       balance: b ? b.balance : null,
       totalCost: b ? (b.totalCost || 0) : 0,
       currency: b ? b.currency : 'CNY',
@@ -571,14 +560,20 @@ export async function apply(ctx) {
           sendJson(res, 200, buildState())
           return
         case 'loginStart':
-          await startLogin()
-          sendJson(res, 200, buildState())
+          sendJson(res, 200, await qrStart())
+          return
+        case 'loginPoll':
+          await qrPollTick()
+          sendJson(res, 200, qrState())
           return
         case 'loginCancel':
-          cancelLogin()
-          sendJson(res, 200, buildState())
+          stopQrPoll()
+          qr = null
+          sendJson(res, 200, { phase: 'idle' })
           return
         case 'logout':
+          stopQrPoll()
+          qr = null
           invalidateToken()
           persistNow()
           sendJson(res, 200, buildState())
@@ -591,6 +586,12 @@ export async function apply(ctx) {
     }
   }
 
+  function invalidateToken() {
+    token = null
+    baseline = null
+    persistSoon()
+  }
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/api/ds-usage',
@@ -599,8 +600,7 @@ export async function apply(ctx) {
 
   ctx.effect(function () {
     return function () {
-      stopLoginPoll()
-      if (edgeHandle) { try { edgeHandle.terminate() } catch (e) { /* ignore */ } edgeHandle = null }
+      stopQrPoll()
     }
   })
 
@@ -613,13 +613,6 @@ export async function apply(ctx) {
         // Stale persisted baseline from before totalCost existed — refresh now.
         syncAccount()
       }
-    })
-  }
-  if (subprocess !== undefined) {
-    nodeRun(['discover']).then(function (d) {
-      if (!d || (!d.edge && !d.chrome)) console.error('ds-usage: 未检测到 Edge/Chrome 浏览器')
-    }).catch(function (e) {
-      console.error('ds-usage: node 助手不可用:', e)
     })
   }
 }
