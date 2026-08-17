@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { solveDeepSeekPow } from './ds-pow.js'
 
 export const name = 'ds-usage-host'
@@ -57,7 +58,11 @@ async function solveForTarget(targetPath) {
 
 /** POST to a PoW-protected auth endpoint (login/send-code etc.). */
 async function authPost(path, body) {
-  const proof = await solveForTarget(path)
+  // 挑战接口的 target_path 必须是去掉域名的路径形式
+  // (如 /auth-api/v0/users/login_by_mobile_sms;完整 URL 或纯相对路径都会
+  // 返回 INVALID_TARGET_PATH)
+  const targetPath = AUTH_BASE.replace(BASE, '') + path
+  const proof = await solveForTarget(targetPath)
   return postJson(AUTH_BASE + path, body, { 'X-DS-Guest-PoW-Response': proof })
 }
 
@@ -162,6 +167,66 @@ async function exchangeWechatCode(code) {
   const { json } = await postJson(AUTH_BASE + '/oauth/get_token', { nonce, provider: 'WECHAT' })
   const token = json && json.data && json.data.biz_data && json.data.biz_data.token
   if (!token) throw new Error('获取 token 失败: ' + JSON.stringify(json).slice(0, 160))
+  return token
+}
+
+// ---- SMS login ----
+let smsDeviceId = null
+function deviceId() {
+  if (!smsDeviceId) smsDeviceId = randomUUID()
+  return smsDeviceId
+}
+
+/**
+ * 发送短信验证码。接口经实机验证:需要 scenario="login" 与一种人机验证
+ * (turnstile/shumei/hcaptcha),但**不需要** PoW(缺验证码返回 RECAPTCHA_VERIFY_FAILED,
+ * 而非 Missing Header)。验证码由 client 半区在 DSH 浏览器里渲染 Turnstile 获得。
+ */
+async function smsSendCode(mobile, areaCode, turnstileToken) {
+  const body = {
+    locale: 'zh_CN',
+    device_id: deviceId(),
+    scenario: 'login',
+    mobile_number: mobile,
+    area_code: areaCode,
+  }
+  if (turnstileToken) body.turnstile_token = turnstileToken
+  const { json } = await postJson(AUTH_BASE + '/create_sms_verification_code', body)
+  const biz = json && json.data
+  const code = biz && biz.biz_code
+  if (code === 0) {
+    return { ok: true, sendWindowSecs: (biz.biz_data && biz.biz_data.send_window_secs) || 60 }
+  }
+  const msg = biz && biz.biz_msg
+  if (code === 2) throw new Error('人机验证未通过(验证码类型可能不匹配),请刷新重试')
+  throw new Error('发送失败: ' + (msg || JSON.stringify(json).slice(0, 120)))
+}
+
+/**
+ * 短信验证码登录。需 PoW 证明头(实机验证:带证明后进入真实校验,
+ * 假码返回 SMS_EXPIRED/SMS_VERIFY_FAILED)。成功后从响应提取 token。
+ */
+async function smsLogin(mobile, areaCode, code) {
+  const body = {
+    region: 'CN',
+    locale: 'zh_CN',
+    mobile_number: mobile,
+    area_code: areaCode,
+    sms_verification_code: code,
+    device_id: deviceId(),
+    os: 'web',
+  }
+  const { json } = await authPost('/login_by_mobile_sms', body)
+  const biz = json && json.data
+  const bizCode = biz && biz.biz_code
+  if (bizCode !== 0) {
+    const msg = biz && biz.biz_msg
+    throw new Error(msg === 'SMS_EXPIRED' ? '验证码已过期,请重新获取' : (msg === 'SMS_VERIFY_FAILED' ? '验证码错误' : '登录失败: ' + (msg || bizCode)))
+  }
+  const bd = biz.biz_data || {}
+  // 尝试从响应提取 userToken(oauth 的 get_token 同样返回 biz_data.token)
+  const token = bd.token || bd.userToken || bd.access_token || bd.session_token
+  if (!token) throw new Error('登录成功但响应未包含 token,请改用微信扫码登录')
   return token
 }
 
@@ -570,6 +635,18 @@ export async function apply(ctx) {
           stopQrPoll()
           qr = null
           sendJson(res, 200, { phase: 'idle' })
+          return
+        case 'smsSendCode':
+          // {mobile, areaCode, turnstileToken}
+          await smsSendCode(String(payload.mobile || ''), String(payload.areaCode || '+86'), payload.turnstileToken)
+          sendJson(res, 200, { ok: true })
+          return
+        case 'smsLogin':
+          // {mobile, areaCode, code}
+          token = await smsLogin(String(payload.mobile || ''), String(payload.areaCode || '+86'), String(payload.code || ''))
+          persistNow()
+          syncAccount()
+          sendJson(res, 200, buildState())
           return
         case 'logout':
           stopQrPoll()

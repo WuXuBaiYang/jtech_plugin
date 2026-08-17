@@ -10,11 +10,11 @@ window.__ModuleLoader__.load({
 
     const React = require('react')
 
-    function rpc(method) {
+    function rpc(method, extra) {
       return fetch('/api/ds-usage', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ method }),
+        body: JSON.stringify(Object.assign({ method }, extra || {})),
       }).then(function (r) { return r.json() }).then(function (d) {
         if (d && d.error) throw new Error(d.error)
         return d
@@ -87,6 +87,12 @@ window.__ModuleLoader__.load({
 .ds-qr img{border-radius:8px;border:1px solid rgba(90,130,190,.35);background:#fff;padding:6px}
 .ds-qr-status{font-size:10px;color:#9fc4f5;text-align:center;line-height:1.4}
 .ds-qr-err{color:#ff8d7a}
+.ds-sms{display:flex;flex-direction:column;gap:6px;width:100%}
+.ds-sms-input{width:100%;box-sizing:border-box;background:rgba(18,32,64,.5);border:1px solid rgba(90,130,190,.28);border-radius:8px;padding:7px 10px;font-size:12px;color:#dbe8ff;font-family:ui-monospace,Consolas,monospace}
+.ds-sms-input::placeholder{color:#5d7aa8}
+.ds-login-tabs{display:flex;gap:4px;margin-bottom:2px}
+.ds-login-tab{flex:1;text-align:center;font-size:10px;color:#7d9bc8;padding:4px 0;border-radius:6px;cursor:pointer;border:1px solid transparent}
+.ds-login-tab.on{color:#cfe4ff;background:rgba(45,75,140,.45);border-color:rgba(110,160,255,.35)}
 .ds-spin{width:10px;height:10px;border-radius:50%;border:2px solid #1e3054;border-top-color:#3f9dff;animation:ds-spin 1s linear infinite;flex:none}
 .ds-bar{position:relative;height:16px;border-radius:4px;background:#070c18;border:1px solid #1c2c50;overflow:hidden;width:100%}
 .ds-bar-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .6s cubic-bezier(.2,.8,.3,1)}
@@ -119,6 +125,47 @@ window.__ModuleLoader__.load({
         document.head.appendChild(style)
         return function () { style.remove() }
       }, 'ds-usage: styles')
+
+      // ---- 短信登录 ----
+      // 平台发验证码接口需要域名绑定的数美/Turnstile 人机验证,插件侧(DSH 本地源)
+      // 无法渲染,因此"获取验证码"引导用户打开平台页面完成(验证码绑定域名,
+      // 平台页面上可正常渲染);插件负责把验证码换 token(需 PoW)。
+      function SmsLogin({ setState }) {
+        const [phone, setPhone] = React.useState('')
+        const [code, setCode] = React.useState('')
+        const [busy, setBusy] = React.useState(false)
+        const [err, setErr] = React.useState(null)
+        const doLogin = function () {
+          if (!/^\d{6,11}$/.test(phone) || !/^\d{4,8}$/.test(code)) { setErr('请填写正确的手机号和验证码'); return }
+          setBusy(true); setErr(null)
+          rpc('smsLogin', { mobile: phone, areaCode: '+86', code: code }).then(function (s) {
+            rpc('state').then(setState).catch(function () {})
+          }).catch(function (e) { setErr(String(e && e.message || e)) }).finally(function () { setBusy(false) })
+        }
+        const openPlatform = function () {
+          if (typeof window !== 'undefined' && window.open) window.open('https://platform.deepseek.com/sign_in', '_blank', 'noopener')
+        }
+        return el('div', { className: 'ds-sms' },
+          el('input', {
+            className: 'ds-sms-input', type: 'tel', placeholder: '手机号',
+            value: phone,
+            onChange: function (e) { setPhone(e.target.value.replace(/\D/g, '')) },
+          }),
+          el('div', { className: 'ds-sms-row' },
+            el('input', {
+              className: 'ds-sms-input', type: 'tel', placeholder: '短信验证码', maxLength: 6,
+              value: code,
+              onChange: function (e) { setCode(e.target.value.replace(/\D/g, '')) },
+            }),
+          ),
+          el('button', { className: 'ds-mini', onClick: openPlatform, title: '在 DeepSeek 开放平台页面获取短信验证码(需完成人机验证)' },
+            el('span', { className: 'ds-mini-login' }, '打开平台页获取验证码 ↗')),
+          el('div', { className: 'ds-qr-status' }, '平台验证码绑定域名,请在新打开的页面用同一手机号获取验证码后填回'),
+          err ? el('div', { className: 'ds-qr-status ds-qr-err' }, '⚠ ' + err) : null,
+          el('button', { className: 'ds-mini', onClick: busy ? null : doLogin, title: '登录' },
+            el('span', { className: 'ds-mini-login' }, busy ? '登录中…' : '登录')),
+        )
+      }
 
       // 微信扫码登录:host 半区通过平台 auth API 驱动 uuid -> 轮询 -> code -> token,
       // 本组件只负责渲染二维码与状态(状态来自 host 的 state.login 字段)。
@@ -207,6 +254,20 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // 未登录时:两个登录方式 Tab(微信扫码 / 短信)
+      function LoginArea({ state, setState }) {
+        const [tab, setTab] = React.useState('qr')
+        return el('div', { className: 'ds-body' },
+          el('div', { className: 'ds-login-tabs' },
+            el('div', { className: 'ds-login-tab' + (tab === 'qr' ? ' on' : ''), onClick: function () { setTab('qr') } }, '扫码登录'),
+            el('div', { className: 'ds-login-tab' + (tab === 'sms' ? ' on' : ''), onClick: function () { setTab('sms') } }, '短信登录'),
+          ),
+          tab === 'qr'
+            ? React.createElement(QrLogin, { state: state, setState: setState })
+            : React.createElement(SmsLogin, { state: state, setState: setState }),
+        )
+      }
+
       function DsUsageModule() {
         const [state, setState] = React.useState(null)
         const [modeIdx, setModeIdx] = React.useState(0)
@@ -243,7 +304,7 @@ window.__ModuleLoader__.load({
         const body = state === null
           ? el('button', { className: 'ds-mini', 'aria-label': 'DeepSeek 用量' }, el('span', { className: 'ds-mini-busy' }, '…'))
           : !state.loggedIn
-            ? React.createElement(QrLogin, { state: state, setState: setState })
+            ? React.createElement(LoginArea, { state: state, setState: setState })
             : React.createElement(UsageBars, { state: state, modeIdx: modeIdx, setModeIdx: setModeIdx })
 
         return el('div', { className: 'ds-module' },

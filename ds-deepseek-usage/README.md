@@ -10,6 +10,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 
 - **余额 + 用量同步引擎**:每小时(仅页面可见时)拉取平台账号余额、今日/本月 Token 用量与费用
 - **微信扫码登录**:插件内直接显示微信二维码,扫码确认后经平台 auth API 换取 `userToken`(无需浏览器/CDP,纯接口驱动)
+- **短信验证码登录**:手机号+验证码换 token(需 PoW 求解;发码因平台验证码绑定域名,引导到平台页面获取)
 - **实时本地计数**:监听 `llm/stream` 事件,实时累加本次进程内产生的 Token 用量(今日/本月/分模型),平台尚未同步前即可看到增量
 - **文件持久化**:状态(含登录态)保存在 `$DSH_HOME/ds-deepseek-usage.json`,重启不丢
 
@@ -19,6 +20,8 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 | --- | --- |
 | `index.js` | Host 半区(服务端):同步引擎、微信扫码登录、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
 | `ds-pow.js` | DeepSeekHashV1 PoW 求解器(短信/密码等受保护接口的挑战证明,扫码登录不使用) |
+
+> 登录方式:侧边栏未登录时提供 **扫码登录** / **短信登录** 两个 Tab。短信登录的"获取验证码"会引导打开 DeepSeek 开放平台页面(发码接口需要域名绑定的数美/Turnstile 人机验证,插件侧无法渲染),拿到验证码后填回插件即可自动完成登录(验证码换 token 全程插件内完成)。
 | `client.js` | Client 半区(浏览器):通过 `window.__ModuleLoader__` 加载,注入 `sidebar.footer.action` 槽位渲染 HP/MP 模块 |
 | `package.json` | 插件元数据(`exports["./client"]` 声明客户端半区) |
 | `dsh.plugin.json` | 展示性插件元数据(可选,随包分发,DSH 无硬性读取) |
@@ -81,7 +84,7 @@ dsh plugin --profile desktop add ds-deepseek-usage
 
 ## 使用
 
-- 未登录:点击模块 **⚡ 扫码登录**,插件内显示微信二维码,用微信扫码并在手机上确认,完成后自动登录
+- 未登录:两个 Tab——**扫码登录**(插件内显示微信二维码,微信扫码确认后自动登录)与**短信登录**(填手机号+验证码,验证码需先在平台页面获取)
 - 已登录:
   - **HP 余额条**:悬停查看充值总额/剩余明细
   - **MP 用量条**:点击在 **今日 ↔ 本月** 间切换;悬停查看每格单位(今日/本月共用同一刻度)
