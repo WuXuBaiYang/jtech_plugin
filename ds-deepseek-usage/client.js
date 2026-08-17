@@ -121,19 +121,43 @@ window.__ModuleLoader__.load({
         return function () { style.remove() }
       }, 'ds-usage: styles')
 
-      // 未登录:提示用 CLI 获取 token(host 定时从 token 文件重载,点击可立即重读)
-      function LoggedOut({ setState }) {
+      // 未登录:点击扫码登录 → host 调用 ds-wechat-login CLI,二维码与状态经
+      // state.login 回传(host 每 10s 也会自动重载 token 文件)
+      function LoggedOut({ state, setState }) {
         const [busy, setBusy] = React.useState(false)
-        const reload = function () {
+        const l = state.login || { status: null }
+        const start = function () {
           setBusy(true)
-          rpc('reloadToken').then(function (s) { if (s) setState(s) }).catch(function () {}).finally(function () { setBusy(false) })
+          rpc('cliLoginStart').then(function () {
+            rpc('state').then(setState).catch(function () {})
+          }).catch(function () {}).finally(function () { setBusy(false) })
         }
-        return el('div', { className: 'ds-qr' },
-          el('div', { className: 'ds-qr-status' }, '未登录 — 请用 CLI 获取 token'),
-          el('div', { className: 'ds-qr-status ds-qr-hint' }, 'ds-wechat-login --balance --token-file ~/.dsh/ds-deepseek-usage.token'),
-          el('button', { className: 'ds-mini', onClick: busy ? null : reload, title: '重新读取 token 文件(CLI 登录后无需重启)' },
-            el('span', { className: 'ds-mini-login' }, busy ? '读取中…' : '重新读取 token')),
-        )
+        const cancel = function () {
+          rpc('cliLoginCancel').then(function () { rpc('state').then(setState).catch(function () {}) }).catch(function () {})
+        }
+        let body = null
+        if (l.status === 'starting' || l.status === 'waiting' || l.status === 'scanned') {
+          body = el('div', { className: 'ds-qr' },
+            l.qr
+              ? el('img', { src: l.qr, alt: '微信扫码登录', width: 130, height: 130 })
+              : el('div', { className: 'ds-qr-status' }, '正在获取二维码…'),
+            el('div', { className: 'ds-qr-status' }, l.status === 'scanned' ? '已扫码，请在手机上确认 ✓' : '请使用微信扫码登录'),
+            el('button', { className: 'ds-mini', onClick: cancel, title: '取消登录' }, el('span', null, '取消')),
+          )
+        } else if (l.status === 'error') {
+          body = el('div', { className: 'ds-qr' },
+            el('div', { className: 'ds-qr-status ds-qr-err' }, '⚠ ' + (l.error || '登录失败')),
+            el('button', { className: 'ds-mini', onClick: start, title: '重试' }, el('span', null, '重试')),
+          )
+        } else {
+          body = el('button', {
+            className: 'ds-mini',
+            title: '微信扫码登录(调用 ds-wechat-login CLI)',
+            'aria-label': 'DeepSeek 用量',
+            onClick: busy ? null : start,
+          }, el('span', { className: 'ds-mini-login' }, busy ? '启动 CLI…' : '⚡ 扫码登录'))
+        }
+        return el('div', { className: 'ds-qr' }, body)
       }
 
       function UsageBars({ state, modeIdx, setModeIdx }) {

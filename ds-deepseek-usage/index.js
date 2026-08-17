@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 
 export const name = 'ds-usage-host'
 export const inject = ['webServer', 'timer']
@@ -74,6 +75,7 @@ export async function apply(ctx) {
   let syncError = null
   let clientVisible = false
   let tokenReloadDisposer = null
+  let cliLogin = null
   let persistenceKind = 'memory'
   let persistenceError = null
 
@@ -232,6 +234,73 @@ export async function apply(ctx) {
     }, TOKEN_RELOAD_MS)
   }
 
+  // ---- CLI 登录(调用 ds-wechat-login,二维码由 CLI 生成并回传 dataURL) ----
+  function cliLoginBin() {
+    return process.env.DS_WECHAT_LOGIN_BIN?.trim() || 'ds-wechat-login'
+  }
+
+  function cliLoginState() {
+    if (!cliLogin) return null
+    return { status: cliLogin.status, qr: cliLogin.qr || null, error: cliLogin.error || null }
+  }
+
+  function cliLoginStart() {
+    cliLoginCancel()
+    cliLogin = { status: 'starting', qr: null, error: null, proc: null }
+    let proc
+    try {
+      proc = spawn(cliLoginBin(), ['--json-lines', '--token-file', tokenFilePath()], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch (e) {
+      cliLogin = { status: 'error', qr: null, error: '无法启动 ds-wechat-login: ' + (e && e.message || e), proc: null }
+      return cliLoginState()
+    }
+    cliLogin.proc = proc
+    let buf = ''
+    proc.stdout.on('data', function (d) {
+      buf += d.toString()
+      let idx
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim()
+        buf = buf.slice(idx + 1)
+        if (!line) continue
+        try {
+          const m = JSON.parse(line)
+          if (m.status === 'waiting') { cliLogin.status = 'waiting'; cliLogin.qr = m.qr || null }
+          else if (m.status === 'scanned') { cliLogin.status = 'scanned' }
+          else if (m.status === 'done') { cliLogin.status = 'done'; if (m.token) { token = m.token; persistNow(); syncAccount() } }
+          else if (m.status === 'error') { cliLogin.status = 'error'; cliLogin.error = m.error || '登录失败' }
+        } catch (e) { /* 忽略非 JSON 行 */ }
+      }
+    })
+    proc.stderr.on('data', function () { /* ignore */ })
+    proc.on('error', function (e) {
+      if (cliLogin && cliLogin.proc === proc) {
+        cliLogin.status = 'error'
+        cliLogin.error = 'CLI 启动失败: ' + (e && e.message || e) + '(请先 npm i -g ds-wechat-login)'
+        cliLogin.proc = null
+      }
+    })
+    proc.on('exit', function (code) {
+      if (cliLogin && cliLogin.proc === proc) {
+        if (cliLogin.status !== 'done' && cliLogin.status !== 'error') {
+          cliLogin.status = 'error'
+          cliLogin.error = 'CLI 异常退出(码 ' + code + ')'
+        }
+        cliLogin.proc = null
+      }
+    })
+    return cliLoginState()
+  }
+
+  function cliLoginCancel() {
+    if (cliLogin && cliLogin.proc) {
+      try { cliLogin.proc.kill('SIGTERM') } catch (e) { /* ignore */ }
+    }
+    cliLogin = null
+  }
+
   function sumUsage(items) {
     const s = { tokens: 0, hit: 0, miss: 0, output: 0, requests: 0 }
     ;(items || []).forEach(function (it) {
@@ -366,6 +435,7 @@ export async function apply(ctx) {
     return {
       loggedIn: Boolean(token),
       tokenFile: tokenFilePath(),
+      login: cliLoginState(),
       persistence: persistenceKind,
       persistenceError: persistenceError,
       syncing: syncing,
@@ -448,7 +518,18 @@ export async function apply(ctx) {
           await reloadTokenFromFile()
           sendJson(res, 200, buildState())
           return
+        case 'cliLoginStart':
+          sendJson(res, 200, cliLoginStart())
+          return
+        case 'cliLoginStatus':
+          sendJson(res, 200, cliLoginState())
+          return
+        case 'cliLoginCancel':
+          cliLoginCancel()
+          sendJson(res, 200, { status: 'idle' })
+          return
         case 'logout':
+          cliLoginCancel()
           invalidateToken()
           try { if (existsSync(tokenFilePath())) unlinkSync(tokenFilePath()) } catch (e) { /* ignore */ }
           persistNow()
@@ -477,6 +558,7 @@ export async function apply(ctx) {
   ctx.effect(function () {
     return function () {
       if (tokenReloadDisposer) { tokenReloadDisposer(); tokenReloadDisposer = null }
+      cliLoginCancel()
     }
   })
 

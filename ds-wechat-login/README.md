@@ -57,11 +57,13 @@ ds-wechat-login --qr url
 
 ## 与 ds-deepseek-usage 插件配合
 
-插件从 token 文件读取登录态(每 10 秒自动重载,无需重启):
+插件侧边栏的"⚡ 扫码登录"按钮会直接调用本 CLI(`--json-lines --token-file <DSH_HOME>/ds-deepseek-usage.token`),二维码回传插件内显示;也可手动运行:
 
 ```sh
 ds-wechat-login --balance --token-file ~/.dsh/ds-deepseek-usage.token
 ```
+
+插件 host 每 10 秒检查 token 文件兜底,无需重启。
 
 ## 许可
 
