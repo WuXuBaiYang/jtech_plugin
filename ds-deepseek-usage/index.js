@@ -235,8 +235,28 @@ export async function apply(ctx) {
   }
 
   // ---- CLI 登录(调用 ds-wechat-login,二维码由 CLI 生成并回传 dataURL) ----
-  function cliLoginBin() {
-    return process.env.DS_WECHAT_LOGIN_BIN?.trim() || 'ds-wechat-login'
+  // 解析顺序:环境变量 DS_WECHAT_LOGIN_BIN → PATH → DSH 共享目录 → 仓库位置
+  function onPath(name) {
+    const pathEnv = process.env.PATH || ''
+    for (const dir of pathEnv.split(':')) {
+      if (!dir) continue
+      const p = join(dir, name)
+      try { if (existsSync(p)) return p } catch (e) { /* next */ }
+    }
+    return null
+  }
+  function resolveCliLogin() {
+    const env = process.env.DS_WECHAT_LOGIN_BIN?.trim()
+    if (env) return env
+    if (onPath('ds-wechat-login')) return 'ds-wechat-login'
+    const fileCandidates = [
+      join(dshHome(), 'profiles/node_modules/ds-wechat-login/cli.mjs'),
+      '/Users/wuxubaiyang/Documents/workspace/jtech_plugin/ds-wechat-login/cli.mjs',
+    ]
+    for (const f of fileCandidates) {
+      try { if (existsSync(f)) return f } catch (e) { /* next */ }
+    }
+    return 'ds-wechat-login'
   }
 
   function cliLoginState() {
@@ -249,7 +269,7 @@ export async function apply(ctx) {
     cliLogin = { status: 'starting', qr: null, error: null, proc: null }
     let proc
     try {
-      proc = spawn(cliLoginBin(), ['--json-lines', '--token-file', tokenFilePath()], {
+      proc = spawn(resolveCliLogin(), ['--json-lines', '--token-file', tokenFilePath()], {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (e) {
