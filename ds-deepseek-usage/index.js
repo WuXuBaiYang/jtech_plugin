@@ -125,6 +125,10 @@ export async function apply(ctx) {
     persistSoon()
   }
 
+  // 参照官方 @deepseek-ai/dsh-agent-loop 的 invariant 监听器(cordis 语义):
+  // prepend —— 排在既有监听器之前,保证本观察者先于其他转换者看到流;
+  // global —— 绕过 emit 方的 context filter(当前 dsh-llm 无 filter,属加固,
+  // 防止未来 emitter 加过滤后漏看);监听器仍归本 fiber 所有,卸载时自动移除。
   ctx.on('llm/stream', function (options, next) {
     const inner = next()
     let counted = false
@@ -147,7 +151,7 @@ export async function apply(ctx) {
         yield chunk
       }
     })()
-  })
+  }, { global: true, prepend: true })
 
   async function resolveNode() {
     if (subprocess === undefined) return null

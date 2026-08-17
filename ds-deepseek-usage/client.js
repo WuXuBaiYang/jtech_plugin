@@ -70,7 +70,11 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = `
-[data-slot="sidebar.footer.action"]{display:flex !important;flex-direction:column;align-items:stretch;gap:6px;width:100%}
+/* 槽位宿主由 shell 渲染为 data-slot 属性 + 内联 display:contents(@deepseek-ai/dsh-client-web-react
+   ANCHOR_STYLE),因此这里必须 !important 才能覆盖成纵向模块堆叠;
+   :has(.ds-module) 把该布局效果限定在本模块挂载时,同槽位其他插件的条目不受影响;
+   data-slot 属性是官方客户端(CSS 里同样使用)稳定的渲染契约。 */
+[data-slot="sidebar.footer.action"]:has(.ds-module){display:flex !important;flex-direction:column;align-items:stretch;gap:6px;width:100%}
 .ds-module{display:flex;flex-direction:row;align-items:center;gap:7px;width:100%;flex:none}
 .ds-logo{width:26px;height:26px;border-radius:8px;flex:none;align-self:center;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#06121f;background:linear-gradient(135deg,#3ddc7a 0 50%,#3f9dff 50% 100%);box-shadow:0 0 8px rgba(80,180,255,.35);letter-spacing:.5px;font-family:ui-monospace,Consolas,monospace}
 .ds-body{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}

@@ -18,6 +18,7 @@ jtech_plugin/
 │   ├── index.js              # Host 半区(服务端)
 │   ├── client.js             # Client 半区(浏览器 UI)
 │   ├── cordis.patch.yml      # bundle patch 层(一键安装时自动应用)
+│   ├── dsh.plugin.json       # 展示性插件元数据(可选)
 │   ├── package.json          # 含 dsh.bundle / dsh.client 声明
 │   └── README.md             # 该插件的独立文档
 ├── docs/                     # 发布/分发流程调研文档

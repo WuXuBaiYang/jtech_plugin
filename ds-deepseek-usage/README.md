@@ -20,6 +20,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 | `index.js` | Host 半区(服务端):同步引擎、登录流程、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
 | `client.js` | Client 半区(浏览器):通过 `window.__ModuleLoader__` 加载,注入 `sidebar.footer.action` 槽位渲染 HP/MP 模块 |
 | `package.json` | 插件元数据(`exports["./client"]` 声明客户端半区) |
+| `dsh.plugin.json` | 展示性插件元数据(可选,随包分发,DSH 无硬性读取) |
 
 ### 数据流
 
