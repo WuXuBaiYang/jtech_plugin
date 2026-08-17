@@ -44,19 +44,30 @@ DeepSeek Platform API ──sync──▶ index.js (host) ──state──▶ c
 
 ## 安装
 
-### 方式一:从 npm 一键安装(推荐)
+### 方式一:从 npm 一键安装(推荐,终端用户也用它)
 
 插件已声明 `dsh.bundle.patch`(随包附带 `cordis.patch.yml`),`dsh plugin` 装完会自动把它加入 profile 的 bundles 层并激活,无需手改任何配置文件:
 
-```powershell
-# web profile
+```bash
+# 前置:DSH 已安装(dsh 命令可用)、Node >= 22、pnpm 在 PATH 上(dsh plugin 内部转发给 pnpm)
+
+# 安装到 web profile(最常用)
 dsh plugin --profile web add ds-deepseek-usage
 
-# 桌面端 profile
-dsh plugin --profile desktop add ds-deepseek-usage
+# 桌面端:用桌面端 App 自建的 profile 名替换 web 即可
+# 本版 dsh CLI 内置的 profile 模板为 web / headless
+dsh plugin --profile <你的profile> add ds-deepseek-usage
 ```
 
-> 需要本机 `pnpm` 在 PATH 上(`dsh plugin` 内部转发给 pnpm)。
+> ⚠️ **安装后必须重启 dsh 才生效**:`dsh plugin add` 写入 profile 的 bundles 层,该层只在启动时合成(运行中不监听)。重启前 `POST /api/ds-usage` 返回 404 属正常现象。
+
+验证安装与版本:
+
+```bash
+dsh plugin --profile web ls                                    # 应看到 ds-deepseek-usage@最新版
+dsh --profile web --dump-config | grep ds-deepseek-usage        # 合成树里应有该插件行
+# 重启 dsh web 后:POST /api/ds-usage 请求体 {"method":"state"} 应返回状态而非 404
+```
 
 ### 方式二:手动安装(本地开发/离线)
 
@@ -67,7 +78,7 @@ dsh plugin --profile desktop add ds-deepseek-usage
    Copy-Item -Recurse ds-deepseek-usage "$env:USERPROFILE\.dsh\profiles\node_modules\"
    ```
 
-2. 在目标 profile(如 `web`、`desktop`)的 `cordis.patch.yml` 中挂载:
+2. 在目标 profile(如 `web`、`headless` 或桌面端自建 profile)的 `cordis.patch.yml` 中挂载:
 
    ```yaml
    # $DSH_HOME/profiles/<profile>/cordis.patch.yml
@@ -81,6 +92,22 @@ dsh plugin --profile desktop add ds-deepseek-usage
 **重启** `dsh web` / 桌面端(客户端 bundle 在启动时烘焙,刷新页面不生效)。
 
 > 桌面端(dsh-desktop)会自动把 `profiles/node_modules` 里的用户包 junction 进应用内,无需额外操作。
+
+## 更新
+
+```bash
+# 更新到最新版本(依赖范围 ^1.x 会自动拉到最新 1.x)
+dsh plugin --profile web update ds-deepseek-usage
+
+# 发布了大版本(2.x)时,需显式重装以更新依赖范围
+dsh plugin --profile web remove ds-deepseek-usage
+dsh plugin --profile web add ds-deepseek-usage
+
+# 更新后同样必须重启 dsh 生效
+dsh web
+```
+
+> 与安装一致:更新写入的是 bundle 层,重启后才生效。运行中会话的 client 端改动(`client.js`)可经 client-hmr 免刷新热替换;host 端(`index.js`)需重启。
 
 ## 使用
 
@@ -110,16 +137,30 @@ node --check index.js   # 语法检查
 node --check client.js
 ```
 
-修改后同样需要**重启 DSH** 才能生效。
+修改后需要**重启 DSH** 生效:client 端(`client.js`)在已运行的会话中可经 client-hmr 免刷新热替换;host 端(`index.js`)需重启。
 
 ## 常见问题
 
 | 现象 | 处理 |
 | --- | --- |
-| 侧边栏看不到模块 / API 返回 404 | profile 的 `cordis.patch.yml` 未挂载,或未重启 |
+| 侧边栏看不到模块 / API 返回 404 | 安装/更新后未重启(bundle 层只在启动时合成);或手动安装时 `cordis.patch.yml` 未挂载 |
 | 点击 MP 条只换名称、进度不变 | 已修复:今日/本月共用同一刻度(取两者较大者为单位),切换时进度可见变化 |
 | 启用插件后对话报错/无法对话 | 已修复:计数逻辑位于 try/catch 中,观察者错误不会破坏主对话流 |
 | 登录失败/二维码过期 | 点击 **刷新二维码** 重新获取;若提示微信回调失败,稍后重试 |
+
+## 发布新版本(维护者)
+
+```bash
+# 1. 在 package.json 中递增 version(如 1.1.0 -> 1.2.0)
+# 2. 发布到 npm(使用带发布权限的 .npmrc)
+cd ds-deepseek-usage
+npm publish --userconfig /path/to/.npmrc-publish
+
+# 3. 提交并推送,与 GitHub 对齐
+git add -A && git commit -m "chore: v1.2.0" && git push
+```
+
+> 终端用户执行 `dsh plugin --profile web update ds-deepseek-usage` + 重启即可获得新版本。
 
 ## 许可
 

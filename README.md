@@ -40,7 +40,7 @@ DSH(DeepSeek Harness)的插件分为两层:
 
 ## 安装一个插件到 DSH
 
-以 web profile 为例(desktop profile 同理,把 `web` 换成 `desktop` 即可):
+以 web profile 为例(其他 profile 同理,把 `web` 换成目标 profile 名即可;本版 dsh CLI 内置模板为 `web` / `headless`,桌面端用其自建的 profile):
 
 ```powershell
 # 一键安装(自动加入 profile bundles 层并激活)
