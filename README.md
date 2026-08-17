@@ -8,7 +8,7 @@
 
 | 子项目 | 说明 | 状态 |
 | --- | --- | --- |
-| [ds-deepseek-usage](./ds-deepseek-usage/) | DeepSeek 账号用量监视 —— 仿游戏风格 HP/MP 侧边栏(余额 + Token 用量,微信扫码/短信登录,实时计数) | ✅ 已发布 [npm](https://www.npmjs.com/package/ds-deepseek-usage) |
+| [ds-deepseek-usage](./ds-deepseek-usage/) | DeepSeek 账号用量监视 —— 仿游戏风格 HP/MP 侧边栏(余额 + Token 用量,微信扫码登录,实时计数) | ✅ 已发布 [npm](https://www.npmjs.com/package/ds-deepseek-usage) |
 
 ## 仓库结构
 
