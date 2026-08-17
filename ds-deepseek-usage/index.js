@@ -114,7 +114,8 @@ async function qrCreate() {
     uuid,
     phase: 'waiting',               // waiting -> scanned -> confirmed -> done | expired | error
     startedAt: Date.now(),
-    qrImageUrl: 'https://open.weixin.qq.com/connect/qrcode/' + uuid,
+    // 二维码图走插件本地代理(同源),避免 DSH 外壳 CSP 拦截跨域图片
+    qrImageUrl: '/api/ds-usage/qr.png?uuid=' + encodeURIComponent(uuid),
     error: null,
   }
 }
@@ -663,6 +664,29 @@ export async function apply(ctx) {
     }
   }
 
+  // ---- 二维码图本地代理(同源,绕过外壳 CSP 对跨域图片的限制) ----
+  async function qrImageHandler(req, res) {
+    try {
+      const u = new URL(req.url, 'http://localhost')
+      const uuid = u.searchParams.get('uuid') || ''
+      if (!uuid) { res.writeHead(400, { 'content-length': '0' }); res.end(); return }
+      const img = await dsFetch('https://open.weixin.qq.com/connect/qrcode/' + encodeURIComponent(uuid), {
+        headers: { Accept: 'image/*' },
+      })
+      if (!img.ok) { res.writeHead(502, { 'content-length': '0' }); res.end(); return }
+      const buf = Buffer.from(await img.arrayBuffer())
+      res.writeHead(200, {
+        'content-type': img.headers.get('content-type') || 'image/png',
+        'content-length': buf.length,
+        'cache-control': 'no-store',
+      })
+      res.end(buf)
+    } catch (e) {
+      res.writeHead(500, { 'content-length': '0' })
+      res.end()
+    }
+  }
+
   function invalidateToken() {
     token = null
     baseline = null
@@ -674,6 +698,12 @@ export async function apply(ctx) {
     path: '/api/ds-usage',
     handler: apiHandler,
   }), 'ds-usage: api route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/api/ds-usage/qr.png',
+    handler: qrImageHandler,
+  }), 'ds-usage: qr image route')
 
   ctx.effect(function () {
     return function () {
