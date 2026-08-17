@@ -17,6 +17,8 @@ const SYNC_INTERVAL_MS = 3600000
 const AUTH_CODES = [40002, 40003]
 const TOKEN_RELOAD_MS = 10000
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+// 调试/热重载验证:每次模块加载生成,state.buildStamp 变化即证明代码已重载(HMR 生效)
+const BUILD_STAMP = Date.now()
 
 function dshHome() {
   return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
@@ -438,6 +440,7 @@ export async function apply(ctx) {
     return {
       loggedIn: Boolean(token),
       tokenFile: tokenFilePath(),
+      buildStamp: BUILD_STAMP,
       login: cliLoginState(),
       persistence: persistenceKind,
       persistenceError: persistenceError,
