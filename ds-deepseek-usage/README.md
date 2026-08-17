@@ -9,7 +9,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 ## 功能
 
 - **余额 + 用量同步引擎**:每小时(仅页面可见时)拉取平台账号余额、今日/本月 Token 用量与费用
-- **扫码登录(调用 CLI)**:侧边栏点击 **⚡ 扫码登录**,host 自动调用 `ds-wechat-login` CLI 完成微信扫码登录,二维码直接显示在插件里
+- **扫码登录(内置 CLI)**:侧边栏点击 **⚡ 扫码登录**,host 自动调用随包分发的 `login-cli.mjs`(微信扫码登录 CLI)完成登录,二维码直接显示在插件里
 - **实时本地计数**:监听 `llm/stream` 事件,实时累加本次进程内产生的 Token 用量(今日/本月/分模型),平台尚未同步前即可看到增量
 - **文件持久化**:状态(含登录态)保存在 `$DSH_HOME/ds-deepseek-usage.json`,重启不丢
 
@@ -17,10 +17,11 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.js` | Host 半区(服务端):同步引擎、CLI 扫码登录(调 ds-wechat-login)、token 文件读取/重载、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
+| `index.js` | Host 半区(服务端):同步引擎、CLI 扫码登录(调内置 login-cli.mjs)、token 文件读取/重载、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
+| `login-cli.mjs` | 内置微信扫码登录 CLI(随包分发,非独立工具;支持 `--json-lines`/`--token-file` 等) |
 
-> 登录方式:侧边栏 **⚡ 扫码登录** 按钮 → host 调用 [ds-wechat-login](../ds-wechat-login/) CLI(`--json-lines`)→ 二维码回传显示 → 扫码确认后 token 自动生效。
-> 前置:需安装 CLI `npm i -g ds-wechat-login`(或用环境变量 `DS_WECHAT_LOGIN_BIN` 指定路径);host 每 10 秒也会检查 token 文件兜底。
+> 登录方式:侧边栏 **⚡ 扫码登录** → host 调用包内 `login-cli.mjs`(`--json-lines --token-file <DSH_HOME>/ds-deepseek-usage.token`)→ 二维码回传显示 → 扫码确认后 token 自动生效。
+> CLI 随插件包分发,不作为独立工具;如需自定义可用环境变量 `DS_WECHAT_LOGIN_BIN` 覆盖。host 每 10 秒也会检查 token 文件兜底。
 | `client.js` | Client 半区(浏览器):通过 `window.__ModuleLoader__` 加载,注入 `sidebar.footer.action` 槽位渲染 HP/MP 模块 |
 | `package.json` | 插件元数据(`exports["./client"]` 声明客户端半区) |
 | `dsh.plugin.json` | 展示性插件元数据(可选,随包分发,DSH 无硬性读取) |
@@ -83,7 +84,7 @@ dsh plugin --profile desktop add ds-deepseek-usage
 
 ## 使用
 
-- 未登录:点击 **⚡ 扫码登录**,插件内显示微信二维码(host 调用 CLI 生成),扫码确认后自动登录;也可直接手动运行 `ds-wechat-login --token-file ~/.dsh/ds-deepseek-usage.token` 写 token 文件,插件 10 秒内自动生效
+- 未登录:点击 **⚡ 扫码登录**,插件内显示微信二维码(host 调用内置 login-cli.mjs 生成),扫码确认后自动登录;也可手动运行 `node login-cli.mjs --token-file ~/.dsh/ds-deepseek-usage.token` 写 token 文件,插件 10 秒内自动生效
 - 已登录:
   - **HP 余额条**:悬停查看充值总额/剩余明细
   - **MP 用量条**:点击在 **今日 ↔ 本月** 间切换;悬停查看每格单位(今日/本月共用同一刻度)

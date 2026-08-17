@@ -5,8 +5,9 @@
 // 获取 userToken,本插件定时从该文件读取(无需重启,10s 内自动生效)。
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'ds-usage-host'
 export const inject = ['webServer', 'timer']
@@ -234,29 +235,11 @@ export async function apply(ctx) {
     }, TOKEN_RELOAD_MS)
   }
 
-  // ---- CLI 登录(调用 ds-wechat-login,二维码由 CLI 生成并回传 dataURL) ----
-  // 解析顺序:环境变量 DS_WECHAT_LOGIN_BIN → PATH → DSH 共享目录 → 仓库位置
-  function onPath(name) {
-    const pathEnv = process.env.PATH || ''
-    for (const dir of pathEnv.split(':')) {
-      if (!dir) continue
-      const p = join(dir, name)
-      try { if (existsSync(p)) return p } catch (e) { /* next */ }
-    }
-    return null
-  }
+  // ---- CLI 登录(调用包内自带的 login-cli.mjs,二维码由 CLI 生成并回传 dataURL) ----
+  // 该 CLI 随插件包一起分发(不作为独立 npm 工具);可用 DS_WECHAT_LOGIN_BIN 覆盖。
+  const BUNDLED_CLI = join(dirname(fileURLToPath(import.meta.url)), 'login-cli.mjs')
   function resolveCliLogin() {
-    const env = process.env.DS_WECHAT_LOGIN_BIN?.trim()
-    if (env) return env
-    if (onPath('ds-wechat-login')) return 'ds-wechat-login'
-    const fileCandidates = [
-      join(dshHome(), 'profiles/node_modules/ds-wechat-login/cli.mjs'),
-      '/Users/wuxubaiyang/Documents/workspace/jtech_plugin/ds-wechat-login/cli.mjs',
-    ]
-    for (const f of fileCandidates) {
-      try { if (existsSync(f)) return f } catch (e) { /* next */ }
-    }
-    return 'ds-wechat-login'
+    return process.env.DS_WECHAT_LOGIN_BIN?.trim() || BUNDLED_CLI
   }
 
   function cliLoginState() {
