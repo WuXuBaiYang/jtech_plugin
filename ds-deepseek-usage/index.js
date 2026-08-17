@@ -1,75 +1,46 @@
-// ds-deepseek-usage — static Host half (v2: API-based QR login).
+// ds-deepseek-usage — static Host half (v2.0: CLI 登录, token 从文件读取).
 // DeepSeek account usage monitor: balance + token usage sync engine,
-// WeChat scan-to-login via platform auth APIs (no browser/CDP), and
-// file-based persistence.
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+// real-time local agent token counting, and file-based persistence.
+// 登录方式:运行 ds-wechat-login --token-file <DSH_HOME>/ds-deepseek-usage.token
+// 获取 userToken,本插件定时从该文件读取(无需重启,10s 内自动生效)。
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { solveDeepSeekPow } from './ds-pow.js'
 
 export const name = 'ds-usage-host'
 export const inject = ['webServer', 'timer']
 
 const BASE = 'https://platform.deepseek.com'
-const AUTH_BASE = BASE + '/auth-api/v0/users'
 const SYNC_INTERVAL_MS = 3600000
 const AUTH_CODES = [40002, 40003]
+const TOKEN_RELOAD_MS = 10000
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-const WX_APPID = 'wx335255e1b73f9e52'
-const WX_CALLBACK = BASE + '/auth-api/v0/users/oauth/wechat/callback'
-const WX_QR_BASE = 'https://open.weixin.qq.com/connect/qrconnect'
-const WX_POLL_BASE = 'https://long.open.weixin.qq.com/connect/l/qrconnect'
 
-// ---- HTTP helpers (global fetch; Node >= 22) ----
-async function dsFetch(url, options = {}) {
-  return fetch(url, {
-    ...options,
-    headers: {
-      'User-Agent': BROWSER_UA,
-      'Accept': 'application/json, text/plain, */*',
-      'Content-Type': 'application/json',
-      'Origin': BASE,
-      'Referer': BASE + '/sign_in',
-      ...(options.headers || {}),
-    },
-    redirect: options.redirect === undefined ? 'follow' : options.redirect,
-    signal: options.signal || AbortSignal.timeout(20000),
-  })
+function dshHome() {
+  return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 }
-
-async function postJson(url, body, headers = {}) {
-  const res = await dsFetch(url, { method: 'POST', body: JSON.stringify(body), headers })
-  const text = await res.text()
-  let json = null
-  try { json = JSON.parse(text) } catch (e) { json = null }
-  return { status: res.status, json, text }
+/** token 文件路径;可用环境变量 DS_USAGE_TOKEN_FILE 覆盖 */
+function tokenFilePath() {
+  return process.env.DS_USAGE_TOKEN_FILE?.trim() || join(dshHome(), 'ds-deepseek-usage.token')
 }
-
-// ---- Proof-of-work gate for protected auth endpoints ----
-async function solveForTarget(targetPath) {
-  const { json } = await postJson(AUTH_BASE + '/create_guest_challenge', { target_path: targetPath })
-  const gc = json && json.data && json.data.biz_data && json.data.biz_data.guest_challenge
-  if (!gc) throw new Error('获取挑战失败: ' + JSON.stringify(json).slice(0, 160))
-  const answer = solveDeepSeekPow(gc.challenge, gc.salt, gc.expire_at, gc.difficulty)
-  if (answer === null) throw new Error('PoW 挑战无解')
-  return Buffer.from(JSON.stringify({ salt: gc.salt, answer })).toString('base64')
+function stateFilePath() {
+  return join(dshHome(), 'ds-deepseek-usage.json')
 }
-
-/** POST to a PoW-protected auth endpoint (login/send-code etc.). */
-async function authPost(path, body) {
-  // 挑战接口的 target_path 必须是去掉域名的路径形式
-  // (如 /auth-api/v0/users/login_by_mobile_sms;完整 URL 或纯相对路径都会
-  // 返回 INVALID_TARGET_PATH)
-  const targetPath = AUTH_BASE.replace(BASE, '') + path
-  const proof = await solveForTarget(targetPath)
-  return postJson(AUTH_BASE + path, body, { 'X-DS-Guest-PoW-Response': proof })
+/** 从 token 文件读取 userToken(文件不存在返回 null) */
+function readTokenFile() {
+  try {
+    const t = readFileSync(tokenFilePath(), 'utf8').trim()
+    return t || null
+  } catch (e) {
+    return null
+  }
 }
 
 // ---- DeepSeek Platform account API (token-authenticated) ----
 async function platformGet(token, path) {
-  const res = await dsFetch(BASE + path, {
-    headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+  const res = await fetch(BASE + path, {
+    headers: { 'User-Agent': BROWSER_UA, Authorization: 'Bearer ' + token, Accept: 'application/json' },
+    signal: AbortSignal.timeout(20000),
   })
   if (res.status === 401 || res.status === 403) throw Object.assign(new Error('登录已失效'), { auth: true })
   let data = null
@@ -94,148 +65,6 @@ async function validateToken(t) {
   } catch (e) { return false }
 }
 
-// ---- WeChat QR login ----
-function wxQrUrl() {
-  return WX_QR_BASE + '?appid=' + WX_APPID +
-    '&scope=snsapi_login&redirect_uri=' + encodeURIComponent(WX_CALLBACK) +
-    '&state=&login_type=jssdk&self_redirect=false&stylelite=1&fast_login=0'
-}
-
-/** Step 1: fetch a fresh WeChat QR uuid (f=xml) and build the session. */
-async function qrCreate() {
-  const res = await dsFetch(wxQrUrl() + '&f=xml&' + Date.now(), {
-    headers: { Accept: 'text/xml, application/xml, */*' },
-  })
-  const xml = await res.text()
-  const m = xml.match(/<uuid><!\[CDATA\[([^\]]+)\]\]><\/uuid>/) || xml.match(/<uuid>([^<]+)<\/uuid>/)
-  if (!m) throw new Error('微信二维码创建失败: ' + xml.slice(0, 120))
-  const uuid = m[1]
-  return {
-    uuid,
-    phase: 'waiting',               // waiting -> scanned -> confirmed -> done | expired | error
-    startedAt: Date.now(),
-    // 二维码图走插件本地代理(同源),避免 DSH 外壳 CSP 拦截跨域图片
-    qrImageUrl: '/api/ds-usage/qr.png?uuid=' + encodeURIComponent(uuid),
-    error: null,
-  }
-}
-
-/** Step 2: poll WeChat login status; on confirm, exchange code -> token. */
-async function qrPoll(session, setToken, syncNow) {
-  const res = await dsFetch(WX_POLL_BASE + '?uuid=' + encodeURIComponent(session.uuid) + '&_=' + Date.now(), {
-    headers: { Accept: 'text/javascript, */*' },
-  })
-  const body = await res.text()
-  const err = (body.match(/wx_errcode\s*=\s*(\d+)/) || [])[1]
-  const code = (body.match(/wx_code\s*=\s*'([^']*)'/) || [])[1] || ''
-  if (code) {
-    // WeChat confirmed the scan — exchange the code for a platform token.
-    const token = await exchangeWechatCode(code)
-    setToken(token)
-    session.phase = 'done'
-    session.error = null
-    syncNow()
-    return session
-  }
-  if (err === '402') { session.phase = 'expired'; session.error = '二维码已过期，请刷新重试'; return session }
-  if (err === '405') { session.phase = 'scanned'; return session }
-  // 408 or anything else: still waiting
-  session.phase = 'waiting'
-  return session
-}
-
-/** Exchange the WeChat auth code for a DeepSeek userToken. */
-async function exchangeWechatCode(code) {
-  // 1. platform callback swaps code -> nonce (307 redirect to /sign_in?nonce=...&provider=WECHAT)
-  const cb = await dsFetch(WX_CALLBACK + '?code=' + encodeURIComponent(code) + '&state=', {
-    redirect: 'manual',
-    headers: { Accept: 'text/html,application/xhtml+xml' },
-  })
-  let nonce = null
-  const loc = cb.headers.get('location')
-  const locMatch = loc && loc.match(/\bnonce=([^&]+)/)
-  if (locMatch) nonce = locMatch[1]
-  if (!nonce) {
-    // Fallback: follow the redirect and read the final URL.
-    const fin = await dsFetch(WX_CALLBACK + '?code=' + encodeURIComponent(code) + '&state=', {
-      headers: { Accept: 'text/html,application/xhtml+xml' },
-    })
-    const finMatch = fin.url.match(/\bnonce=([^&]+)/)
-    if (finMatch) nonce = finMatch[1]
-  }
-  if (!nonce) throw new Error('微信回调未返回 nonce')
-  // 2. exchange nonce -> userToken (no PoW gate)
-  const { json } = await postJson(AUTH_BASE + '/oauth/get_token', { nonce, provider: 'WECHAT' })
-  const token = json && json.data && json.data.biz_data && json.data.biz_data.token
-  if (!token) throw new Error('获取 token 失败: ' + JSON.stringify(json).slice(0, 160))
-  return token
-}
-
-// ---- SMS login ----
-let smsDeviceId = null
-function deviceId() {
-  if (!smsDeviceId) smsDeviceId = randomUUID()
-  return smsDeviceId
-}
-
-/**
- * 发送短信验证码。接口经实机验证:需要 scenario="login" 与一种人机验证
- * (turnstile/shumei/hcaptcha),但**不需要** PoW(缺验证码返回 RECAPTCHA_VERIFY_FAILED,
- * 而非 Missing Header)。验证码由 client 半区在 DSH 浏览器里渲染 Turnstile 获得。
- */
-async function smsSendCode(mobile, areaCode, turnstileToken) {
-  const body = {
-    locale: 'zh_CN',
-    device_id: deviceId(),
-    scenario: 'login',
-    mobile_number: mobile,
-    area_code: areaCode,
-  }
-  if (turnstileToken) body.turnstile_token = turnstileToken
-  const { json } = await postJson(AUTH_BASE + '/create_sms_verification_code', body)
-  const biz = json && json.data
-  const code = biz && biz.biz_code
-  if (code === 0) {
-    return { ok: true, sendWindowSecs: (biz.biz_data && biz.biz_data.send_window_secs) || 60 }
-  }
-  const msg = biz && biz.biz_msg
-  if (code === 2) throw new Error('人机验证未通过(验证码类型可能不匹配),请刷新重试')
-  throw new Error('发送失败: ' + (msg || JSON.stringify(json).slice(0, 120)))
-}
-
-/**
- * 短信验证码登录。需 PoW 证明头(实机验证:带证明后进入真实校验,
- * 假码返回 SMS_EXPIRED/SMS_VERIFY_FAILED)。成功后从响应提取 token。
- */
-async function smsLogin(mobile, areaCode, code) {
-  const body = {
-    region: 'CN',
-    locale: 'zh_CN',
-    mobile_number: mobile,
-    area_code: areaCode,
-    sms_verification_code: code,
-    device_id: deviceId(),
-    os: 'web',
-  }
-  const { json } = await authPost('/login_by_mobile_sms', body)
-  const biz = json && json.data
-  const bizCode = biz && biz.biz_code
-  if (bizCode !== 0) {
-    const msg = biz && biz.biz_msg
-    throw new Error(msg === 'SMS_EXPIRED' ? '验证码已过期,请重新获取' : (msg === 'SMS_VERIFY_FAILED' ? '验证码错误' : '登录失败: ' + (msg || bizCode)))
-  }
-  const bd = biz.biz_data || {}
-  // 尝试从响应提取 userToken(oauth 的 get_token 同样返回 biz_data.token)
-  const token = bd.token || bd.userToken || bd.access_token || bd.session_token
-  if (!token) throw new Error('登录成功但响应未包含 token,请改用微信扫码登录')
-  return token
-}
-
-function stateFilePath() {
-  const home = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
-  return join(home, 'ds-deepseek-usage.json')
-}
-
 export async function apply(ctx) {
   let token = null
   let baseline = null
@@ -244,8 +73,7 @@ export async function apply(ctx) {
   let syncing = false
   let syncError = null
   let clientVisible = false
-  let qr = null
-  let qrDisposer = null
+  let tokenReloadDisposer = null
   let persistenceKind = 'memory'
   let persistenceError = null
 
@@ -277,7 +105,6 @@ export async function apply(ctx) {
     try {
       const raw = readFileSync(file, 'utf8')
       const rec = JSON.parse(raw)
-      token = rec.token || null
       baseline = rec.baseline || null
       if (rec.local) {
         local = rec.local
@@ -379,6 +206,30 @@ export async function apply(ctx) {
     if (!clientVisible || !token || syncing) return false
     if (baseline === null || Date.now() - baseline.syncedAt > SYNC_INTERVAL_MS) return syncAccount()
     return false
+  }
+
+  // ---- token 文件重载(CLI 登录后自动生效) ----
+  async function reloadTokenFromFile() {
+    const t = readTokenFile()
+    if (t === token) return
+    token = t
+    persistNow()
+    if (token) {
+      const ok = await validateToken(token)
+      if (!ok) { invalidateToken(); return }
+    }
+    baseline = null
+    syncAccount()
+  }
+
+  // 定时检查 token 文件(mtime/内容变化即重载;文件被删=登出)
+  function startTokenWatcher() {
+    if (tokenReloadDisposer) return
+    tokenReloadDisposer = ctx.interval(function () {
+      reloadTokenFromFile().catch(function (e) {
+        console.error('ds-usage: token 重载失败:', e)
+      })
+    }, TOKEN_RELOAD_MS)
   }
 
   function sumUsage(items) {
@@ -495,40 +346,6 @@ export async function apply(ctx) {
     }
   }
 
-  // ---- QR login lifecycle ----
-  async function qrStart() {
-    stopQrPoll()
-    try {
-      qr = await qrCreate()
-      qrDisposer = ctx.interval(function () {
-        qrPollTick().catch(function (e) {
-          console.error('ds-usage: 扫码轮询失败:', e)
-          if (qr) { qr.error = String(e && e.message || e); qr.phase = 'error' }
-        })
-      }, 2000)
-      return qrState()
-    } catch (e) {
-      qr = { phase: 'error', error: String(e && e.message || e), startedAt: Date.now(), qrImageUrl: null }
-      return qrState()
-    }
-  }
-
-  async function qrPollTick() {
-    if (!qr || qr.phase === 'done' || qr.phase === 'expired' || qr.phase === 'error') return
-    if (Date.now() - qr.startedAt > 600000) { qr.phase = 'expired'; qr.error = '登录超时，请重试'; stopQrPoll(); return }
-    await qrPoll(qr, function (t) { token = t; persistNow() }, function () { syncAccount() })
-    if (qr.phase === 'done') stopQrPoll()
-  }
-
-  function stopQrPoll() {
-    if (qrDisposer) { qrDisposer(); qrDisposer = null }
-  }
-
-  function qrState() {
-    if (!qr) return null
-    return { phase: qr.phase, qrImageUrl: qr.qrImageUrl, error: qr.error }
-  }
-
   function buildState() {
     rollDay()
     const b = baseline
@@ -548,13 +365,13 @@ export async function apply(ctx) {
     const staleMs = b ? Math.max(0, Date.now() - b.syncedAt) : 0
     return {
       loggedIn: Boolean(token),
+      tokenFile: tokenFilePath(),
       persistence: persistenceKind,
       persistenceError: persistenceError,
       syncing: syncing,
       syncError: syncError,
       lastSyncAt: b ? b.syncedAt : null,
       nextSyncIn: b ? Math.max(0, SYNC_INTERVAL_MS - staleMs) : 0,
-      login: qrState(),
       balance: b ? b.balance : null,
       totalCost: b ? (b.totalCost || 0) : 0,
       currency: b ? b.currency : 'CNY',
@@ -614,6 +431,7 @@ export async function apply(ctx) {
           return
         case 'tick':
           clientVisible = true
+          await reloadTokenFromFile()
           await maybeSync()
           sendJson(res, 200, buildState())
           return
@@ -625,34 +443,14 @@ export async function apply(ctx) {
           await syncAccount()
           sendJson(res, 200, buildState())
           return
-        case 'loginStart':
-          sendJson(res, 200, await qrStart())
-          return
-        case 'loginPoll':
-          await qrPollTick()
-          sendJson(res, 200, qrState())
-          return
-        case 'loginCancel':
-          stopQrPoll()
-          qr = null
-          sendJson(res, 200, { phase: 'idle' })
-          return
-        case 'smsSendCode':
-          // {mobile, areaCode, turnstileToken}
-          await smsSendCode(String(payload.mobile || ''), String(payload.areaCode || '+86'), payload.turnstileToken)
-          sendJson(res, 200, { ok: true })
-          return
-        case 'smsLogin':
-          // {mobile, areaCode, code}
-          token = await smsLogin(String(payload.mobile || ''), String(payload.areaCode || '+86'), String(payload.code || ''))
-          persistNow()
-          syncAccount()
+        case 'reloadToken':
+          // CLI 登录后手动触发重读 token 文件
+          await reloadTokenFromFile()
           sendJson(res, 200, buildState())
           return
         case 'logout':
-          stopQrPoll()
-          qr = null
           invalidateToken()
+          try { if (existsSync(tokenFilePath())) unlinkSync(tokenFilePath()) } catch (e) { /* ignore */ }
           persistNow()
           sendJson(res, 200, buildState())
           return
@@ -661,29 +459,6 @@ export async function apply(ctx) {
       }
     } catch (e) {
       sendJson(res, 500, { error: String(e && e.message || e) })
-    }
-  }
-
-  // ---- 二维码图本地代理(同源,绕过外壳 CSP 对跨域图片的限制) ----
-  async function qrImageHandler(req, res) {
-    try {
-      const u = new URL(req.url, 'http://localhost')
-      const uuid = u.searchParams.get('uuid') || ''
-      if (!uuid) { res.writeHead(400, { 'content-length': '0' }); res.end(); return }
-      const img = await dsFetch('https://open.weixin.qq.com/connect/qrcode/' + encodeURIComponent(uuid), {
-        headers: { Accept: 'image/*' },
-      })
-      if (!img.ok) { res.writeHead(502, { 'content-length': '0' }); res.end(); return }
-      const buf = Buffer.from(await img.arrayBuffer())
-      res.writeHead(200, {
-        'content-type': img.headers.get('content-type') || 'image/png',
-        'content-length': buf.length,
-        'cache-control': 'no-store',
-      })
-      res.end(buf)
-    } catch (e) {
-      res.writeHead(500, { 'content-length': '0' })
-      res.end()
     }
   }
 
@@ -699,27 +474,21 @@ export async function apply(ctx) {
     handler: apiHandler,
   }), 'ds-usage: api route')
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: '/api/ds-usage/qr.png',
-    handler: qrImageHandler,
-  }), 'ds-usage: qr image route')
-
   ctx.effect(function () {
     return function () {
-      stopQrPoll()
+      if (tokenReloadDisposer) { tokenReloadDisposer(); tokenReloadDisposer = null }
     }
   })
 
   restore()
-  if (token) {
-    validateToken(token).then(function (ok) {
-      if (!ok) {
-        invalidateToken()
-      } else if (baseline && typeof baseline.totalCost !== 'number') {
-        // Stale persisted baseline from before totalCost existed — refresh now.
-        syncAccount()
-      }
-    })
-  }
+  startTokenWatcher()
+  // 启动时读取一次 token 文件
+  reloadTokenFromFile().then(function () {
+    if (token && baseline && typeof baseline.totalCost !== 'number') {
+      // Stale persisted baseline from before totalCost existed — refresh now.
+      syncAccount()
+    }
+  }).catch(function (e) {
+    console.error('ds-usage: 初始 token 读取失败:', e)
+  })
 }

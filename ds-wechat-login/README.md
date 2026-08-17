@@ -55,6 +55,14 @@ ds-wechat-login --qr url
 
 得到的 `userToken` 可用于 `Authorization: Bearer <token>` 调用 DeepSeek 开放平台 API(如 `GET /api/v0/users/get_user_summary`)。
 
+## 与 ds-deepseek-usage 插件配合
+
+插件从 token 文件读取登录态(每 10 秒自动重载,无需重启):
+
+```sh
+ds-wechat-login --balance --token-file ~/.dsh/ds-deepseek-usage.token
+```
+
 ## 许可
 
 MIT

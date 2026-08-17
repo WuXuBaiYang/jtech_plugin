@@ -9,7 +9,7 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 ## 功能
 
 - **余额 + 用量同步引擎**:每小时(仅页面可见时)拉取平台账号余额、今日/本月 Token 用量与费用
-- **微信扫码登录**:插件内直接显示微信二维码,扫码确认后经平台 auth API 换取 `userToken`(无需浏览器/CDP,纯接口驱动)
+- **CLI 登录**:运行 `ds-wechat-login --token-file <DSH_HOME>/ds-deepseek-usage.token` 扫码获取 token,插件自动从该文件读取(10 秒内生效,无需重启)
 - **实时本地计数**:监听 `llm/stream` 事件,实时累加本次进程内产生的 Token 用量(今日/本月/分模型),平台尚未同步前即可看到增量
 - **文件持久化**:状态(含登录态)保存在 `$DSH_HOME/ds-deepseek-usage.json`,重启不丢
 
@@ -17,10 +17,13 @@ DeepSeek 账号用量监视插件 —— 为 [DeepSeek Harness (DSH)](https://gi
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.js` | Host 半区(服务端):同步引擎、微信扫码登录、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
-| `ds-pow.js` | DeepSeekHashV1 PoW 求解器(短信/密码等受保护接口的挑战证明,扫码登录不使用) |
+| `index.js` | Host 半区(服务端):同步引擎、token 文件读取/重载、`llm/stream` 计数、HTTP API `/api/ds-usage`、文件持久化 |
 
-> 登录方式:侧边栏未登录时显示 **⚡ 扫码登录**,微信扫码确认后自动登录。
+> 登录方式:登录全部由 CLI([ds-wechat-login](../ds-wechat-login/))完成 ——
+> ```sh
+> ds-wechat-login --balance --token-file ~/.dsh/ds-deepseek-usage.token
+> ```
+> 插件 host 每 10 秒检查一次该 token 文件(变化即重载),侧边栏的"重新读取 token"按钮可立即生效;点"退出登录"会删除 token 文件。
 | `client.js` | Client 半区(浏览器):通过 `window.__ModuleLoader__` 加载,注入 `sidebar.footer.action` 槽位渲染 HP/MP 模块 |
 | `package.json` | 插件元数据(`exports["./client"]` 声明客户端半区) |
 | `dsh.plugin.json` | 展示性插件元数据(可选,随包分发,DSH 无硬性读取) |
@@ -83,7 +86,7 @@ dsh plugin --profile desktop add ds-deepseek-usage
 
 ## 使用
 
-- 未登录:点击 **⚡ 扫码登录**,插件内显示微信二维码,用微信扫码并在手机上确认,完成后自动登录
+- 未登录:显示 CLI 登录提示与"重新读取 token"按钮;运行 `ds-wechat-login --token-file ~/.dsh/ds-deepseek-usage.token` 后自动/手动重读即登录
 - 已登录:
   - **HP 余额条**:悬停查看充值总额/剩余明细
   - **MP 用量条**:点击在 **今日 ↔ 本月** 间切换;悬停查看每格单位(今日/本月共用同一刻度)

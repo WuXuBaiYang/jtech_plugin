@@ -86,6 +86,7 @@ window.__ModuleLoader__.load({
 .ds-qr{display:flex;flex-direction:column;align-items:center;gap:6px;width:100%}
 .ds-qr img{border-radius:8px;border:1px solid rgba(90,130,190,.35);background:#fff;padding:6px}
 .ds-qr-status{font-size:10px;color:#9fc4f5;text-align:center;line-height:1.4}
+.ds-qr-hint{color:#5d7aa8;font-family:ui-monospace,Consolas,monospace;font-size:9px;word-break:break-all}
 .ds-qr-err{color:#ff8d7a}
 .ds-spin{width:10px;height:10px;border-radius:50%;border:2px solid #1e3054;border-top-color:#3f9dff;animation:ds-spin 1s linear infinite;flex:none}
 .ds-bar{position:relative;height:16px;border-radius:4px;background:#070c18;border:1px solid #1c2c50;overflow:hidden;width:100%}
@@ -120,43 +121,19 @@ window.__ModuleLoader__.load({
         return function () { style.remove() }
       }, 'ds-usage: styles')
 
-      // 微信扫码登录:host 半区通过平台 auth API 驱动 uuid -> 轮询 -> code -> token,
-      // 本组件只负责渲染二维码与状态(状态来自 host 的 state.login 字段)。
-      function QrLogin({ state, setState }) {
-        const l = state.login || { phase: null }
+      // 未登录:提示用 CLI 获取 token(host 定时从 token 文件重载,点击可立即重读)
+      function LoggedOut({ setState }) {
         const [busy, setBusy] = React.useState(false)
-        const start = function () {
+        const reload = function () {
           setBusy(true)
-          rpc('loginStart').then(function () {
-            rpc('state').then(setState).catch(function () {})
-          }).catch(function () {}).finally(function () { setBusy(false) })
+          rpc('reloadToken').then(function (s) { if (s) setState(s) }).catch(function () {}).finally(function () { setBusy(false) })
         }
-        const cancel = function () {
-          rpc('loginCancel').then(function () { rpc('state').then(setState).catch(function () {}) }).catch(function () {})
-        }
-        const retry = start
-        let body = null
-        if (l.phase === 'waiting' || l.phase === 'scanned' || l.phase === 'done') {
-          body = el('div', { className: 'ds-qr' },
-            el('img', { src: l.qrImageUrl, alt: '微信扫码登录', width: 120, height: 120 }),
-            el('div', { className: 'ds-qr-status' }, l.phase === 'scanned' ? '已扫码，请在手机上确认 ✓' : '请使用微信扫码登录'),
-            el('button', { className: 'ds-mini', onClick: cancel, title: '取消登录' }, el('span', null, '取消')),
-          )
-        } else if (l.phase === 'expired' || l.phase === 'error') {
-          body = el('div', { className: 'ds-qr' },
-            el('div', { className: 'ds-qr-status ds-qr-err' }, '⚠ ' + (l.error || '二维码已过期')),
-            el('button', { className: 'ds-mini', onClick: retry, title: '重新获取二维码' }, el('span', null, '刷新二维码')),
-          )
-        } else {
-          body = el('button', {
-            className: 'ds-mini',
-            title: 'DeepSeek 用量（未登录，微信扫码登录）',
-            'aria-label': 'DeepSeek 用量',
-            onClick: busy ? null : start,
-          }, el('span', { className: 'ds-mini-login' }, busy ? '获取二维码…' : '⚡ 扫码登录'))
-        }
-        // 直接返回内容,不再包一层 .ds-body(避免与模块外层重复嵌套导致上下两行)
-        return body
+        return el('div', { className: 'ds-qr' },
+          el('div', { className: 'ds-qr-status' }, '未登录 — 请用 CLI 获取 token'),
+          el('div', { className: 'ds-qr-status ds-qr-hint' }, 'ds-wechat-login --balance --token-file ~/.dsh/ds-deepseek-usage.token'),
+          el('button', { className: 'ds-mini', onClick: busy ? null : reload, title: '重新读取 token 文件(CLI 登录后无需重启)' },
+            el('span', { className: 'ds-mini-login' }, busy ? '读取中…' : '重新读取 token')),
+        )
       }
 
       function UsageBars({ state, modeIdx, setModeIdx }) {
@@ -244,7 +221,7 @@ window.__ModuleLoader__.load({
         const body = state === null
           ? el('button', { className: 'ds-mini', 'aria-label': 'DeepSeek 用量' }, el('span', { className: 'ds-mini-busy' }, '…'))
           : !state.loggedIn
-            ? React.createElement(QrLogin, { state: state, setState: setState })
+            ? React.createElement(LoggedOut, { state: state, setState: setState })
             : React.createElement(UsageBars, { state: state, modeIdx: modeIdx, setModeIdx: setModeIdx })
 
         return el('div', { className: 'ds-module' },

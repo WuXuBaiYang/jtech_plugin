@@ -1,7 +1,7 @@
 {
   "name": "ds-deepseek-usage",
   "version": "1.1.0",
-  "description": "DeepSeek account usage monitor (HP/MP) — sidebar module with balance and token usage bars, browser-login auth capture, hourly visible-only sync, and real-time local token increments.",
+  "description": "DeepSeek account usage monitor (HP/MP) — sidebar module with balance and token usage bars; login via ds-wechat-login CLI (token file), hourly visible-only sync, and real-time local token increments.",
   "license": "MIT",
   "type": "module",
   "main": "./index.js",
@@ -14,7 +14,6 @@
   "files": [
     "index.js",
     "client.js",
-    "ds-pow.js",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
